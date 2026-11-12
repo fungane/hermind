@@ -7,10 +7,10 @@ safety, not about your idea.
 
 What helps most:
 
-- **Bug reports** through the [issue form](../../issues/new/choose). Use `hermind doctor --share` for the environment, and
+- **Bug reports** through the [issue form](https://github.com/fungane/hermind/issues/new/choose). Use `hermind doctor --share` for the environment, and
   reproduce the problem with made-up notes. Never paste your notes, a database, a key file or a screenshot of recalled notes.
 - **Client reports**: an MCP client changed where it keeps its configuration, or an entry from `hermind config CLIENT`
-  ([docs/setup.md](docs/setup.md#mcp-clients)) does not work.
+  ([docs/setup.md](../docs/setup.md#mcp-clients)) does not work.
 - **Ideas**, with the problem you had rather than the code you would write.
 - **Security problems**: use the private advisory described in [SECURITY.md](SECURITY.md), not a public issue.
 

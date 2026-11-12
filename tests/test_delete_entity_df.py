@@ -3,7 +3,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 sys.path.insert(0, str(ROOT))
 
 import import_core  # noqa: E402

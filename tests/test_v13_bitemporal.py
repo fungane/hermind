@@ -163,7 +163,7 @@ def test_times_ending_in_z_or_an_offset_are_read_as_that_time_not_as_local_time(
     import os
     import sys
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hermind"))
     from store_common import parse_valid
     if not hasattr(time, "tzset"):
         pytest.skip("time.tzset is POSIX only")

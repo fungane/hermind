@@ -1,7 +1,7 @@
 # Import, export, backup and uninstall
 
 How to bring notes into Hermind (`hermind import`), take them out (`hermind export`), copy the database safely
-(`tools/backup.py`) and remove everything.
+(`hermind/tools/backup.py`) and remove everything.
 
 - [Import](#import)
 - [Export](#export)
@@ -52,7 +52,7 @@ your own and are not held back.
 | `new` | Will be (or was) added as a note. If some details could not be used (an unreadable date, an unknown kind, a trust outside 0 to 1) they are left out, the text is still imported, and the line says which |
 | `version` | An older version of a note this import adds (from Hermind's JSON export). Kept as an older version of that new note: found by a search that includes history, never shown as a live note |
 | `duplicate` | The same text is already in the database (the line names the note, and says when it is not live) or came earlier in this import. Nothing is added |
-| `edited` | The file is Hermind's own Markdown export of a note you have, and it differs from that note. Nothing is applied; `tools/import_md.py` brings edits back into the note |
+| `edited` | The file is Hermind's own Markdown export of a note you have, and it differs from that note. Nothing is applied; `hermind/tools/import_md.py` brings edits back into the note |
 | `history` | Not imported as a live note, and the line says why: an older version or merged duplicate in an export; an older version whose note is not new; a note rejected in review; something the source's owner removed later (ChatGPT) |
 | `refused` | The store's own rules say no: credential-like text, text you asked Hermind to forget, text over 100,000 characters, or nothing left outside `<private>...</private>`. The reason is the store's wording |
 | `unreadable` | The file's text could not be decoded; the reason says how to fix it (see `--encoding`) |
@@ -326,7 +326,7 @@ with front matter (`id`, `kind`, `status`, `tags`, `trust`, `created`, `valid_fr
 `pinned`, `scope`, `keywords`, `rev`) followed by the text; every folder gets an `index.md`. A folder that is not empty is
 refused unless you add `--force`, which overwrites files of the same name and deletes nothing. The folder reads back with
 `hermind import` (older versions come back as history, not live notes). To edit the files and bring the edits back into the notes, use
-`tools/import_md.py` from a checkout (a dry run
+`hermind/tools/import_md.py` from a checkout (a dry run
 unless `--apply`; text changes go through versioned updates, notes without an id become new notes, conflicts are reported).
 
 ### What each format carries
@@ -461,11 +461,11 @@ by hand while an agent is running can miss notes, and syncing it with Dropbox or
 backup instead:
 
 ```bash
-python3 tools/backup.py ~/.hermes/hermind.db ~/.hermind/memory.db   # one or more databases
-python3 tools/backup.py --keep 14 --dest /home/you/backups DB
+python3 hermind/tools/backup.py ~/.hermes/hermind.db ~/.hermind/memory.db   # one or more databases
+python3 hermind/tools/backup.py --keep 14 --dest /home/you/backups DB
 ```
 
-`tools/backup.py` (from a checkout or the installed plugin folder) copies each database while it is in use, runs
+`hermind/tools/backup.py` (`tools/backup.py` inside the installed plugin folder) copies each database while it is in use, runs
 `PRAGMA integrity_check` on the copy, makes it mode 600 and keeps the newest N copies (`--keep`, default 7) in `--dest`
 (default `~/backups/hermind`). A copy that fails the check is discarded, older backups stay and the exit code is 1. An
 encrypted database stays encrypted with the same key, so copy the key file separately
@@ -479,7 +479,7 @@ the notes.
 Run it nightly from cron (example, not installed by Hermind):
 
 ```cron
-15 3 * * *  cd ~/hermind && python3 tools/backup.py ~/.hermes/hermind.db >> ~/.hermes/logs/backup.log 2>&1
+15 3 * * *  cd ~/hermind && python3 hermind/tools/backup.py ~/.hermes/hermind.db >> ~/.hermes/logs/backup.log 2>&1
 ```
 
 ## Uninstall
@@ -497,5 +497,5 @@ Hermind has no uninstall command; nothing of it runs once its entries are gone. 
 | Install backups | `backups/hermind-plugin-*` and `backups/db/` in each profile | delete them |
 | Semantic search | `~/.hermes/hermind-vec` (or `$HERMIND_VEC_HOME`, or the `--home` you chose): venv, models, caches | delete the folder |
 | Encryption key | wherever you put it (`HERMIND_DB_KEY_FILE`) | delete it only after the database is gone |
-| Backups you made | `~/backups/hermind` (the default of `tools/backup.py`) or your `--dest` | delete them |
+| Backups you made | `~/backups/hermind` (the default of `hermind/tools/backup.py`) or your `--dest` | delete them |
 

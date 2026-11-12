@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 sys.path.insert(0, str(ROOT))
 
 import hermind_cli  # noqa: E402

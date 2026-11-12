@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 CLI = str(ROOT / "hermind_cli.py")
 
 
@@ -45,9 +46,11 @@ def test_runtime_files_match_deploy_sh():
     text = (ROOT / "tools" / "deploy.sh").read_text()
     listed = set(re.search(r"for f in (.*?); do", text).group(1).split())
     in_sh = {f for f in listed if f != "store*.py"}
-    assert in_sh == set(hermind_cli.RUNTIME_FILES)
+    assert 'cp "$SRC"/../README.md "$D/"' in text                  # README.md sits at the top of the checkout
+    assert in_sh | {"README.md"} == set(hermind_cli.RUNTIME_FILES)
     assert "store.py" in hermind_cli.runtime_files() and "store_schema.py" in hermind_cli.runtime_files()
-    assert all((ROOT / f).exists() for f in hermind_cli.runtime_files())
+    assert all(hermind_cli.runtime_source(f).exists() for f in hermind_cli.runtime_files())
+    assert hermind_cli.runtime_source("README.md") == REPO / "README.md"
 
 
 def test_version_flag(home):
@@ -233,7 +236,7 @@ def test_install_skill_dry_run_install_update(home):
 
 
 def test_skill_frontmatter_is_valid():
-    head = (ROOT / "skills" / "hermind-setup" / "SKILL.md").read_text().split("---")[1]
+    head = (REPO / "skills" / "hermind-setup" / "SKILL.md").read_text().split("---")[1]
     kv = dict(l.split(": ", 1) for l in head.strip().splitlines())
     assert kv["name"] == "hermind-setup" and kv["description"].startswith("Use when") and len(kv["description"]) <= 60
 
@@ -277,7 +280,7 @@ exec sh -c "$1"
 
 
 def _remote(home, tmp_path, *extra):
-    d = json.loads(run("config", "cursor", "--json", "--remote", "me@box", "--remote-checkout", str(ROOT), *extra, home=home, check=0).stdout)
+    d = json.loads(run("config", "cursor", "--json", "--remote", "me@box", "--remote-checkout", str(REPO), *extra, home=home, check=0).stdout)
     return d, json.loads(d["snippet"])["mcpServers"]["hermind"]
 
 

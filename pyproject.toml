@@ -39,12 +39,16 @@ hermind-mcp = "hermind.hermind_mcp:main"
 hermind-hook = "hermind.hermind_hook:main"
 hermind = "hermind.hermind_cli:main"
 
-# The repository root is itself the `hermind` package (the Hermes plugin directory): __init__.py, store*.py, ...
-# so the wheel ships exactly those modules plus synonyms.yaml. tools/, tests/ and docs/ stay out of it.
+# hermind/ is the package and also the Hermes plugin directory (__init__.py, store*.py, ...). The wheel ships those
+# modules plus synonyms.yaml; hermind/tools/, tests/ and docs/ stay out of it.
 [tool.setuptools]
 packages = ["hermind"]
-package-dir = { "hermind" = "." }
 include-package-data = false
 
 [tool.setuptools.package-data]
 hermind = ["synonyms.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib -p no:cacheprovider"
+pythonpath = ["hermind"]

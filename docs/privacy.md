@@ -17,7 +17,7 @@ Hermind is a local program. Nobody, including the author, receives your notes.
 |---|---|---|
 | Notes, entities, trust and open counts | One SQLite file (`hermind.db` or `memory.db`). The file and its WAL/SHM files are mode 600; a folder Hermind creates for it is 700 (a folder you made is left alone). Plain by default, or [encrypted](#encryption) | Never by Hermind itself. Backups and file syncs you set up copy it |
 | Search queries and results | In process memory | You connect an MCP client or Hermes: the notes it asks for go into that agent's prompt, so the agent's model provider sees them |
-| Notes sent to an LLM | Nowhere stored | Only if you turn on `llm.enabled` (default **off**): rerank sends the question and about 20 candidate notes, `capture_extract` sends the conversation turn, the nightly `tools/sleep_consolidate.py` sends recent notes, all to the endpoint **you** configured. Credential-like notes are skipped and personal data is replaced by tags first (see below) |
+| Notes sent to an LLM | Nowhere stored | Only if you turn on `llm.enabled` (default **off**): rerank sends the question and about 20 candidate notes, `capture_extract` sends the conversation turn, the nightly `hermind/tools/sleep_consolidate.py` sends recent notes, all to the endpoint **you** configured. Credential-like notes are skipped and personal data is replaced by tags first (see below) |
 | Vector index | The same database file | Never. The embedding model runs locally; `hermind setup-vectors` downloads the worker's packages from PyPI and the model you choose (52 to 568 MB, checked against a pinned checksum) from Hugging Face once, with Hugging Face's telemetry off. onnxruntime sends usage telemetry to Microsoft by default; Hermind starts the worker with `ORT_DISABLE_TELEMETRY=1`, so it sends nothing |
 | Telemetry, update checks, analytics | None | The package opens no network connection except `llm.py` when enabled and the one-time `hermind setup-vectors` download |
 
@@ -30,7 +30,7 @@ What you should do:
   apart from the database.
 
 `memory_forget` deletes a note for good; `hermind export` hands over everything
-([Import, export and backup](import-export.md#export)). To report a vulnerability, see [SECURITY.md](../SECURITY.md).
+([Import, export and backup](import-export.md#export)). To report a vulnerability, see [SECURITY.md](../.github/SECURITY.md).
 
 ## What you control
 
@@ -76,11 +76,11 @@ SQLCipher (AES-256). Without one nothing changes and nothing extra is installed.
 ```bash
 pip install ".[encrypted]"     # in a checkout: the sqlcipher3 driver (wheels for Linux x86_64 / aarch64, macOS, Windows)
 # for uvx, start the server with --from "hermind[encrypted] @ git+https://github.com/fungane/hermind@v1.0.0"
-python3 tools/encrypt_db.py --generate-key-file ~/.hermind/db.key   # random key, mode 600, never overwrites
+python3 hermind/tools/encrypt_db.py --generate-key-file ~/.hermind/db.key   # random key, mode 600, never overwrites
 export HERMIND_DB_KEY_FILE=~/.hermind/db.key
 # stop Hermes, hermind-mcp and the vector worker, then:
-python3 tools/encrypt_db.py ~/.hermes/hermind.db            # writes a verified .encrypted copy, original untouched
-python3 tools/encrypt_db.py ~/.hermes/hermind.db --replace  # swaps it in; the plaintext original is kept as
+python3 hermind/tools/encrypt_db.py ~/.hermes/hermind.db            # writes a verified .encrypted copy, original untouched
+python3 hermind/tools/encrypt_db.py ~/.hermes/hermind.db --replace  # swaps it in; the plaintext original is kept as
                                                            # .plaintext-backup: delete it yourself afterwards
 ```
 
@@ -89,8 +89,8 @@ Then put `HERMIND_DB_KEY_FILE` into the environment of **every** process that op
 (`~/.hermes/.env`), the nightly cron script, and each MCP client's `env` block. Several clients start servers with a reduced
 environment, so an exported variable alone may not reach `hermind-mcp`. Prefer `HERMIND_DB_KEY_FILE` to `HERMIND_DB_KEY`
 (the passphrase itself): it shows up in process environments, and some clients strip variables whose names look like
-credentials (not checked for each one). Go back with `python3 tools/encrypt_db.py DB --decrypt --replace`.
-[`tools/backup.py`](import-export.md#backup) keeps backups encrypted.
+credentials (not checked for each one). Go back with `python3 hermind/tools/encrypt_db.py DB --decrypt --replace`.
+[`hermind/tools/backup.py`](import-export.md#backup) keeps backups encrypted.
 
 What it does and does not do:
 

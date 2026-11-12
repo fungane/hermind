@@ -17,14 +17,14 @@ Hermind is standard-library Python 3.10 or newer, with no runtime dependencies. 
 | Route | For | Install | Default database |
 |---|---|---|---|
 | MCP server (`hermind-mcp`) | Claude Code, Cursor, Codex and any other MCP client | `uvx` (needs [uv](https://docs.astral.sh/uv/)), `pipx`, `pip install .`, or run from a checkout | `~/.hermind/memory.db` (or `$HERMIND_DB`) |
-| Hermes plugin | Hermes: automatic recall before every turn, automatic capture, review queue | `hermind install-hermes`, or `tools/deploy.sh` | `~/.hermes/hermind.db` (per profile) |
+| Hermes plugin | Hermes: automatic recall before every turn, automatic capture, review queue | `hermind install-hermes`, or `hermind/tools/deploy.sh` | `~/.hermes/hermind.db` (per profile) |
 
 ```bash
 # MCP server: run straight from git (git URL form is pinned to the release tag), or from a checkout
 uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind-mcp --version
 uvx --from /path/to/hermind hermind-mcp --version
 pipx install git+https://github.com/fungane/hermind@v1.0.0        # or: pip install .   (from a checkout)
-python hermind_mcp.py                                              # from a checkout, no install
+python hermind/hermind_mcp.py                                      # from a checkout, no install
 
 # Hermes plugin
 git clone --branch v1.0.0 https://github.com/fungane/hermind.git ~/hermind
@@ -254,7 +254,7 @@ use an agent on your own computer, let the client start the server over ssh inst
 hermind config chatgpt-desktop --remote me@203.0.113.7 --remote-hermes-profile default
 ```
 
-The printed entry is `ssh -T -o BatchMode=yes me@203.0.113.7 'env HERMIND_DB=... python3 ~/hermind/hermind_mcp.py'`. It
+The printed entry is `ssh -T -o BatchMode=yes me@203.0.113.7 'env HERMIND_DB=... python3 ~/hermind/hermind/hermind_mcp.py'`. It
 needs a key that logs in without a password and a Hermind checkout on the server (`--remote-checkout`, default
 `~/hermind`). Nothing listens on the network and nothing new runs on the server between sessions.
 
@@ -273,7 +273,7 @@ port forwarding is refused. Hermind prints the line and never edits `authorized_
 
 **Not supported:** two-way merging of two databases, and an HTTP MCP server (it would need its own authentication). Never
 sync the database file itself with Syncthing or Dropbox: SQLite's `-wal` file makes that unsafe. Use
-[`tools/backup.py`](import-export.md#backup).
+[`hermind/tools/backup.py`](import-export.md#backup).
 
 ### Automatic recall in Claude Code
 
@@ -317,8 +317,8 @@ Hindsight is a memory service for Hermes. Two scripts move a bank's facts and ob
 both are read-only on the Hindsight side and never delete anything there:
 
 ```bash
-python3 tools/export_hindsight.py BANK bank.json [--url URL]   # default: the local API on port 9177; GET requests only
-python3 import_hindsight.py bank.json NEW.db      # NEW.db is overwritten: never point it at a database you use
+python3 hermind/tools/export_hindsight.py BANK bank.json [--url URL]   # default: the local API on port 9177; GET requests only
+python3 hermind/import_hindsight.py bank.json NEW.db      # NEW.db is overwritten: never point it at a database you use
 ```
 
 Entities and the graph are rebuilt, near-duplicates are merged (nothing is deleted), and kinds are guessed from the text.
@@ -403,7 +403,7 @@ completely. onnxruntime's official builds send usage telemetry to Microsoft by d
 
 Pick one model profile. All run locally on the CPU. Each note keeps one vector, so switching replaces the old ones: run
 `setup-vectors` and `embed-all` again, and going back means embedding again (back up first with
-[`tools/backup.py`](import-export.md#backup)). Measure on your own notes before switching.
+[`hermind/tools/backup.py`](import-export.md#backup)). Measure on your own notes before switching.
 
 | Profile | Model | File | RAM while awake | Embedding 5,000 notes* |
 |---|---|---|---|---|
@@ -419,16 +419,16 @@ If the worker runs against an encrypted database, install `sqlcipher3` in its ve
 
 ## Optional LLM tools
 
-Offline scripts in `tools/` (from a checkout or the installed plugin folder). None runs by itself, nothing in the plugin
+Offline scripts in `hermind/tools/` of a checkout (`tools/` in the installed plugin folder). None runs by itself, nothing in the plugin
 calls them and Hermind installs no cron job. They send note text to the endpoint you name and cost tokens; they take
 `--base-url`, `--model` and `--api-key-env` (the variable's name, never the key). For DeepSeek, add
 `--extra-body '{"thinking": {"type": "disabled"}}'` or most batches time out. Back the database up first.
 
 | Tool | Needs an LLM | What it does |
 |---|---|---|
-| `tools/backfill_aliases.py --db DB` | yes | Writes alternative phrasings for old notes (one call per batch of notes; the model never sees questions). `--dry-run`, `--kinds`, `--limit`, `--since YYYY-MM-DD\|last`, `--rebuild`. Never on the search path |
-| `tools/build_summaries.py --db DB` | yes | Per-entity consolidated summaries. `--stale-only` for incremental runs, `--entities`, `--dry-run`, `--price-in/--price-out` for a cost estimate |
-| `tools/sleep_consolidate.py --db DB` | yes | Nightly review of the last day's notes (below) |
+| `hermind/tools/backfill_aliases.py --db DB` | yes | Writes alternative phrasings for old notes (one call per batch of notes; the model never sees questions). `--dry-run`, `--kinds`, `--limit`, `--since YYYY-MM-DD\|last`, `--rebuild`. Never on the search path |
+| `hermind/tools/build_summaries.py --db DB` | yes | Per-entity consolidated summaries. `--stale-only` for incremental runs, `--entities`, `--dry-run`, `--price-in/--price-out` for a cost estimate |
+| `hermind/tools/sleep_consolidate.py --db DB` | yes | Nightly review of the last day's notes (below) |
 
 ### Sleep-time consolidation
 
@@ -448,11 +448,11 @@ and forgotten text are refused; at most `--max-apply` (20) changes are made per 
 
 ```bash
 # 1. dry run (the default): prints the report, changes nothing
-python3 tools/sleep_consolidate.py --db ~/.hermes/hermind.db --llm-config ~/.hermes/hermind-llm.json
+python3 hermind/tools/sleep_consolidate.py --db ~/.hermes/hermind.db --llm-config ~/.hermes/hermind-llm.json
 # 2. apply what the guards accepted
-python3 tools/sleep_consolidate.py --db ~/.hermes/hermind.db --llm-config ~/.hermes/hermind-llm.json --apply
+python3 hermind/tools/sleep_consolidate.py --db ~/.hermes/hermind.db --llm-config ~/.hermes/hermind-llm.json --apply
 # 3. undo a merge or supersession (ids are in the report); reject an unwanted aggregate with memory_review
-python3 tools/sleep_consolidate.py --db ~/.hermes/hermind.db --restore 45 52
+python3 hermind/tools/sleep_consolidate.py --db ~/.hermes/hermind.db --restore 45 52
 ```
 
 LLM settings use the same fields as `plugins.hermind.llm`, but the tool does not read `config.yaml`: put them in a small

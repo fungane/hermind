@@ -6,22 +6,23 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 sys.path.insert(0, str(ROOT))
 
 import hermind_cli  # noqa: E402
 import import_core  # noqa: E402
 
 DOCS = {"how-it-works.md", "import-export.md", "limitations.md", "privacy.md", "setup.md"}
-CHANGED = ["README.md", "README.zh-TW.md", "AGENTS.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md",
-           *sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "docs").glob("*.md"))]
+CHANGED = ["README.md", "README.zh-TW.md", "AGENTS.md", "CHANGELOG.md", ".github/CONTRIBUTING.md", ".github/SECURITY.md",
+           *sorted(p.relative_to(REPO).as_posix() for p in (REPO / "docs").glob("*.md"))]
 PAGE = "docs/import-export.md"
 OTHER_PRODUCTS = ("mem0", "zep", "letta", "memgpt", "hindsight", "graphiti", "cognee", "supermemory", "langmem")
 RUNTIME_MODULES = sorted(p.name for p in ROOT.glob("*.py") if p.name != "__init__.py")
 
 
 def read(rel):
-    return (ROOT / rel).read_text(encoding="utf-8")
+    return (REPO / rel).read_text(encoding="utf-8")
 
 
 def slug(heading):
@@ -50,16 +51,17 @@ def test_every_relative_link_points_at_an_existing_file_and_heading(rel):
         if target.startswith(("http://", "https://", "mailto:", "../../")):   # "../../issues" is a GitHub-relative link
             continue
         path, _, frag = target.partition("#")
-        dest = (ROOT / rel).parent / path if path else ROOT / rel
+        dest = (REPO / rel).parent / path if path else REPO / rel
         assert dest.resolve().exists(), (rel, target, "no such file")
         if frag and dest.suffix == ".md":
-            assert frag in anchors(dest.resolve().relative_to(ROOT).as_posix()), (rel, target, "no such heading")
+            assert frag in anchors(dest.resolve().relative_to(REPO).as_posix()), (rel, target, "no such heading")
 
 
 def test_docs_holds_exactly_the_five_english_pages():
-    files = {p.name for p in (ROOT / "docs").iterdir()}
+    files = {p.name for p in (REPO / "docs").iterdir() if p.is_file()}
     assert files == DOCS, sorted(files ^ DOCS)
-    assert not list((ROOT / "docs").glob("*.zh-TW.md"))
+    assert {p.name for p in (REPO / "docs").iterdir() if p.is_dir()} == {"assets"}     # the README images
+    assert not list((REPO / "docs").glob("*.zh-TW.md"))
 
 
 def test_the_expected_headings_exist():
@@ -100,7 +102,7 @@ def test_the_page_says_the_export_formats_are_third_party_descriptions_for_both_
 
 def test_the_page_has_every_field_of_the_json_record_and_every_export_option(capsys):
     import tempfile
-    sys.path.insert(0, str(ROOT / "tests"))
+    sys.path.insert(0, str(REPO / "tests"))
     from export_fixture import build_db
     from store import DecisionStore
     import export_notes

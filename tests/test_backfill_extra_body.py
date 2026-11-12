@@ -4,7 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 
 
 def _load():

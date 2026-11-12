@@ -7,7 +7,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

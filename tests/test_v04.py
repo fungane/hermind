@@ -459,7 +459,7 @@ def test_summaries_replace_are_locked_and_survive_consolidate(store_mod, tmp_pat
 def test_summary_validation_rejects_invented_numbers_and_bad_sources():
     import importlib.util
     from pathlib import Path
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent / "hermind"
     spec = importlib.util.spec_from_file_location("build_summaries", root / "tools" / "build_summaries.py")
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     notes = [dict(id=1, content="Swap is 4GB", created_at=0), dict(id=2, content="Swap raised to 8GB", created_at=0)]
@@ -542,7 +542,7 @@ def test_capture_extract_failure_falls_back_to_raw_and_empty_stores_nothing(pkg,
 def test_import_hindsight_observations_become_locked_summaries(tmp_path):
     import importlib.util, json as _json
     from pathlib import Path
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent / "hermind"
     spec = importlib.util.spec_from_file_location("import_hindsight", root / "import_hindsight.py")
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     src = tmp_path / "hs.json"
@@ -638,7 +638,7 @@ def test_vector_signal_finds_note_without_shared_words_and_degrades_gracefully(p
 
 def test_vector_profiles_pick_model_files_names_and_prefixes(tmp_path):
     import sys as _sys
-    _sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
+    _sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "hermind"))
     from vec import VectorIndex
     d = VectorIndex({"home": str(tmp_path)}, "x.db")                       # unchanged default: e5, with prefixes
     assert (d.model_name, d.query_prefix, d.passage_prefix) == ("e5", "query: ", "passage: ")
@@ -664,7 +664,7 @@ def test_build_summaries_skips_an_entity_whose_summary_is_refused(tmp_path, caps
     """Round 2: a RefusedWrite from replace_summaries ended the whole run with a traceback."""
     import importlib.util, io
     from pathlib import Path
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent / "hermind"
     spec = importlib.util.spec_from_file_location("build_summaries_r2", root / "tools" / "build_summaries.py")
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     import store as store_mod

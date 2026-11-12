@@ -114,9 +114,9 @@ dropped), within `core_summary_chars`. Pinned notes keep at most two thirds of t
 The provider appends the block, inside the `<hermind-context>` fence, to the system prompt. The text is cached per size and
 scope and rebuilt after any write by any connection, or when the hour changes.
 
-**Offline tools that write.** `tools/sleep_consolidate.py` (LLM) proposes merges, supersessions and aggregate facts; every
+**Offline tools that write.** `hermind/tools/sleep_consolidate.py` (LLM) proposes merges, supersessions and aggregate facts; every
 proposal is validated in code, aggregates are new pending notes, nothing is deleted. `hermind export --format markdown` and
-`tools/import_md.py` round-trip notes through Markdown files with YAML front matter: import compares the file's fields with
+`hermind/tools/import_md.py` round-trip notes through Markdown files with YAML front matter: import compares the file's fields with
 the note, uses the `rev` fingerprint to tell a file edit from a database change (conflicts are reported, not applied), and
 sends text changes through `update()` so history is kept. Details in [Setup](setup.md#optional-llm-tools) and
 [Import, export and backup](import-export.md).
@@ -149,6 +149,9 @@ sends text changes through `update()` so history is kept. Details in [Setup](set
    │   └─ vec.py     optional: embedding client         │──► embed_server.py (own venv, exits when idle)
    └────────────────────────────────────────────────────┘
 ```
+
+All modules live in the `hermind/` folder of the repository (the same files make up the installed Hermes plugin);
+the offline scripts are in `hermind/tools/`.
 
 | Module | Responsibility |
 |---|---|
@@ -214,7 +217,7 @@ What the numbers say:
   accuracy; a dated-fact digest of the same notes gave 87.0 % (what `memory_reflect` produces with an LLM). Answerer and
   judge were both DeepSeek Flash with a LongMemEval-style yes/no prompt, not GPT-4o, so this is not comparable with
   published leaderboards; the 30 abstention questions were skipped.
-- **Optional LLM steps help a little.** Generated aliases (`tools/backfill_aliases.py`) moved the hard set from 10 to 13 of 20
+- **Optional LLM steps help a little.** Generated aliases (`hermind/tools/backfill_aliases.py`) moved the hard set from 10 to 13 of 20
   on their own, and on the 54-question set LLM rerank alone gave 49 of 54 (lexical: 42) and rerank plus semantic search 50 of 54.
 - **Known weak spots:** questions that share no word with the note and are not covered by a synonym group or the semantic
   layer; "why" questions where the reason sits in a different note than the topic; very generic questions ("what do I do for

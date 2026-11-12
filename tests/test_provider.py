@@ -115,7 +115,7 @@ def test_register(pkg):
 
 
 def test_importer_classify(pkg):
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hermind"))
     import import_hindsight as ih
     assert ih.classify({"text": "最後決定用方案 B"}) == "decision"
     assert ih.classify({"text": "據報某公司今日發布新產品"}) == "news"

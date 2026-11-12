@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 sys.path.insert(0, str(ROOT))
 import vec_setup  # noqa: E402
 from vec import PROFILES, VectorIndex  # noqa: E402

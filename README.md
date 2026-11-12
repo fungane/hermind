@@ -21,7 +21,7 @@ English · [繁體中文](README.zh-TW.md)
 
 On day 1 the agent stores a decision (by itself, or because you asked). A week later, in a new session:
 
-<p align="center"><img src="assets/demo.svg" alt="A new session a week later: asked in Cantonese which database was chosen for orders, memory_search returns the PostgreSQL decision first and a weaker client-quote note second." width="760"></p>
+<p align="center"><img src="docs/assets/demo.svg" alt="A new session a week later: asked in Cantonese which database was chosen for orders, memory_search returns the PostgreSQL decision first and a weaker client-quote note second." width="760"></p>
 
 That is real output from a fresh database with three notes and lexical search only. A question that shares no word with
 the note can still miss; the optional [semantic search](docs/setup.md#semantic-search) closes most of that gap with a
@@ -113,7 +113,7 @@ Measured on Linux with 5,000 short synthetic notes; your numbers will vary with 
 
 ## How it works
 
-<p align="center"><img src="assets/how-it-works.svg" alt="How Hermind works: recall before each prompt, capture after each reply, optional nightly review, and other agents through the MCP server, all on one SQLite file." width="760"></p>
+<p align="center"><img src="docs/assets/how-it-works.svg" alt="How Hermind works: recall before each prompt, capture after each reply, optional nightly review, and other agents through the MCP server, all on one SQLite file." width="760"></p>
 
 In Hermes the agent gets ten tools: `memory_remember`, `memory_search`, `memory_get`, `memory_related` (with `timeline`
 and `as_of`), `memory_update`, `memory_feedback`, `memory_forget`, `memory_list`, `memory_review` and `memory_reflect`.
@@ -129,7 +129,7 @@ Notes stay in the file on your machine; nobody, including the author, receives t
 you turn it on: an LLM endpoint you configure for the optional tools (off by default), the one-time model download for
 semantic search, and whatever your MCP client sends to its own model provider. Pattern-based redaction misses unusual
 formats, and stored text can still carry prompt injection; both are reduced, not eliminated.
-[docs/privacy.md](docs/privacy.md) has the full list and the encryption guide. Vulnerabilities: [SECURITY.md](SECURITY.md).
+[docs/privacy.md](docs/privacy.md) has the full list and the encryption guide. Vulnerabilities: [SECURITY.md](.github/SECURITY.md).
 
 ## Documentation
 
@@ -148,7 +148,7 @@ formats, and stored text can still carry prompt injection; both are reduced, not
 Windows is not supported yet. Report problems through the issue forms (they ask for what is needed and remind you not to
 paste real notes). Issues are read first by an AI assistant that may draft a fix; the maintainer reviews and sends every
 reply, so answers can take a few days. Please open an issue rather than a pull request: pull requests from outside are not
-accepted ([CONTRIBUTING.md](CONTRIBUTING.md)).
+accepted ([CONTRIBUTING.md](.github/CONTRIBUTING.md)).
 
 Hermind was designed by its maintainer and largely written by Claude (Anthropic) through Claude Code and the Hermes
 agent, then reviewed and tested by the maintainer. The test data is synthetic. It is an independent project, not made by,

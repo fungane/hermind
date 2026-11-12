@@ -187,7 +187,7 @@ def test_stray_print_cannot_corrupt_stdout(tmp_path):
     import subprocess
     import sys
     from pathlib import Path
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent / "hermind"
     code = (
         "import sys, runpy, io\n"
         "sys.argv = ['hermind_mcp.py']\n"

@@ -10,7 +10,8 @@ import pytest
 
 sqlcipher3 = pytest.importorskip("sqlcipher3")
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 MARK = "ZEBRA-MARKER-8841"
 
 

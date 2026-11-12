@@ -226,7 +226,7 @@ HERMES_AGENT = Path("/path/to/hermes-agent")
 
 @pytest.mark.skipif(not (HERMES_AGENT / "agent" / "memory_provider.py").exists(), reason="no Hermes checkout")
 def test_real_memory_provider_base_class(tmp_path):
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent / "hermind"
     code = f"""
 import sys, json, importlib.util
 sys.path.insert(0, {str(HERMES_AGENT)!r})

@@ -57,7 +57,7 @@ def test_oversized_note_is_refused(store, store_mod):
 
 
 def _imp(tmp_path):
-    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "hermind"))
     import import_hindsight
     return import_hindsight
 

@@ -21,7 +21,7 @@
 
 第一天，agent 記下一個決定（它自己記，或者你叫它記）。一星期後，在新的 session：
 
-<p align="center"><img src="assets/demo.zh-TW.svg" alt="一星期後的新 session：用廣東話問訂單之前揀了哪個資料庫，memory_search 第一條返回 PostgreSQL 的決定，第二條是關係較弱的報價單筆記。" width="760"></p>
+<p align="center"><img src="docs/assets/demo.zh-TW.svg" alt="一星期後的新 session：用廣東話問訂單之前揀了哪個資料庫，memory_search 第一條返回 PostgreSQL 的決定，第二條是關係較弱的報價單筆記。" width="760"></p>
 
 這是一個只有三則筆記、只用字詞搜尋的全新資料庫的真實輸出。問題和筆記完全沒有共同字詞時仍然可能找不到；選用的
 [語意搜尋](docs/setup.md#semantic-search)用本機模型補回大部分（下載一次，不需要 API key）。
@@ -109,7 +109,7 @@ SQLite 檔。
 
 ## 運作原理
 
-<p align="center"><img src="assets/how-it-works.zh-TW.svg" alt="Hermind 的運作：每次提問前回想、每次回覆後記錄、選用的夜間整理，其他 agent 經 MCP 伺服器使用同一個 SQLite 檔。" width="760"></p>
+<p align="center"><img src="docs/assets/how-it-works.zh-TW.svg" alt="Hermind 的運作：每次提問前回想、每次回覆後記錄、選用的夜間整理，其他 agent 經 MCP 伺服器使用同一個 SQLite 檔。" width="760"></p>
 
 在 Hermes，agent 會得到十個工具：`memory_remember`、`memory_search`、`memory_get`、`memory_related`（包括 `timeline`
 和 `as_of`）、`memory_update`、`memory_feedback`、`memory_forget`、`memory_list`、`memory_review` 和 `memory_reflect`。
@@ -123,7 +123,7 @@ LongMemEval-S（470 條英文問題）上，單靠字詞搜尋，正確的 sessi
 筆記留在你機器上的檔案裏；沒有人會收到，包括作者。除非你自己開啟，否則不會有東西離開你的機器：你為選用工具設定的
 LLM 端點（預設關閉）、語意搜尋的一次性模型下載，以及你的 MCP 客戶端送去它自己模型供應商的內容。靠規則找個人資料會漏掉
 不常見的格式，儲存的文字也仍然可能帶有提示注入；兩者都只是減少，不是消除。完整清單和加密指南見
-[docs/privacy.md](docs/privacy.md)（英文）。保安漏洞請按 [SECURITY.md](SECURITY.md) 私下報告。
+[docs/privacy.md](docs/privacy.md)（英文）。保安漏洞請按 [SECURITY.md](.github/SECURITY.md) 私下報告。
 
 ## 文件（英文）
 
@@ -141,7 +141,7 @@ LLM 端點（預設關閉）、語意搜尋的一次性模型下載，以及你�
 **早期版本，只有一個人每天在用，所以預計會有 bug。** 每次發佈前都會在 Linux 和 macOS 跑測試；暫時不支援 Windows。
 請用 issue 表格回報問題（表格會問需要的資料，並提醒你不要貼真實筆記）。Issue 會先由 AI 助手看，它可能會起草修正；
 每個回覆都由維護者審閱後親自發出，所以可能要等幾天。請開 issue，不要開 pull request：不接受外來的 pull request
-（[CONTRIBUTING.md](CONTRIBUTING.md)，英文）。
+（[CONTRIBUTING.md](.github/CONTRIBUTING.md)，英文）。
 
 Hermind 由維護者設計，主要由 Claude（Anthropic）透過 Claude Code 和 Hermes agent 編寫，再由維護者審閱和測試。測試資料
 全部是虛構的。這是獨立項目，並非由 Nous Research、Anthropic 或任何與它一起使用的產品製作、認可或附屬。

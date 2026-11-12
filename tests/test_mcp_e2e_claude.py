@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 pytestmark = pytest.mark.skipif(not (os.environ.get("HERMIND_E2E_CLAUDE") == "1" and shutil.which("claude")),
                                 reason="set HERMIND_E2E_CLAUDE=1 (needs the claude CLI)")
 

@@ -11,7 +11,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from export_fixture import build_db, table_dump  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "hermind"
 
 
 def cli(tmp_path, *args, env=None):
