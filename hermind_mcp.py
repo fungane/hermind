@@ -568,13 +568,23 @@ def serve(server: HermindMCP, instream, outstream) -> None:
             if not msg:
                 send(_json_rpc_error(None, -32600, "Invalid Request"))
                 continue
-            replies = [r for r in (server.handle_message(m) for m in msg) if r is not None]
+            replies = [r for r in (_handle(server, m) for m in msg) if r is not None]
             if replies:
                 send(replies)
             continue
-        reply = server.handle_message(msg)
+        reply = _handle(server, msg)
         if reply is not None:
             send(reply)
+
+
+def _handle(server: HermindMCP, msg):
+    """One message; nesting too deep to handle (newer Pythons parse what older ones refuse) is an invalid request,
+    never the end of the server."""
+    try:
+        return server.handle_message(msg)
+    except RecursionError:
+        mid = msg.get("id") if isinstance(msg, dict) and isinstance(msg.get("id"), (str, int)) else None
+        return _json_rpc_error(mid, -32600, "Invalid Request: nested too deeply")
 
 
 # -- command line ------------------------------------------------------------------------------------------------

@@ -331,9 +331,37 @@ def test_modern_read_only_writes_nothing(mcp_spawn, tmp_path, pkg):
 
 def test_deeply_nested_json_is_a_parse_error_and_the_server_keeps_serving(mcp_spawn):
     c = mcp_spawn()
-    for line in ("[" * 100_000, '{"a":' * 50_000, "[" * 100_000 + "]" * 100_000):
+    for line in ("[" * 100_000, '{"a":' * 50_000):                 # not JSON at all: always a parse error
         c.send_raw(line)
         r = c.read()
         assert r["id"] is None and r["error"]["code"] == -32700
+    # valid JSON nested 100,000 deep: older Pythons refuse to parse it (parse error), newer ones parse it and it is a
+    # batch whose one entry is not a request; either way an error comes back and the server keeps serving
+    c.send_raw("[" * 100_000 + "]" * 100_000)
+    r = c.read()
+    if isinstance(r, list):
+        assert len(r) == 1 and r[0]["error"]["code"] == -32600
+    else:
+        assert r["id"] is None and r["error"]["code"] == -32700
     assert c.request("ping")["result"] == {}
     assert c.close() == 0
+
+
+def test_a_message_too_deep_to_handle_is_an_invalid_request_and_the_server_keeps_serving(monkeypatch):
+    import io
+    import hermind_mcp as m
+
+    class Deep:
+        def handle_message(self, msg):
+            if msg.get("method") == "deep":
+                raise RecursionError("maximum recursion depth exceeded")
+            return {"jsonrpc": "2.0", "id": msg.get("id"), "result": {}}
+
+    src = io.StringIO('{"jsonrpc":"2.0","id":7,"method":"deep"}\n[{"jsonrpc":"2.0","id":8,"method":"deep"}]\n'
+                      '{"jsonrpc":"2.0","id":9,"method":"ping"}\n')
+    out = io.StringIO()
+    m.serve(Deep(), src, out)
+    lines = [json.loads(l) for l in out.getvalue().splitlines()]
+    assert lines[0]["id"] == 7 and lines[0]["error"]["code"] == -32600
+    assert lines[1][0]["id"] == 8 and lines[1][0]["error"]["code"] == -32600
+    assert lines[2] == {"jsonrpc": "2.0", "id": 9, "result": {}}
