@@ -1,0 +1,19 @@
+name: close pull requests from outside
+# Hermind takes issues, not pull requests (see CONTRIBUTING.md). This job never checks out or runs the PR's code.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+permissions:
+  pull-requests: write
+jobs:
+  close:
+    if: ${{ !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr comment "$NUMBER" --repo "$REPO" --body "Thank you for the time you put into this. Hermind reads and stores people's notes for years, so code changes are written only by the maintainer and reviewed line by line, and pull requests are closed automatically. Please open an issue describing the problem or idea (see CONTRIBUTING.md); it will be looked at."
+          gh pr close "$NUMBER" --repo "$REPO"

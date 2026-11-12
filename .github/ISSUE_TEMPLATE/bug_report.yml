@@ -1,0 +1,63 @@
+name: Bug report
+description: Something does not work as the README or docs say.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Hermind. This is a one-person project, so a precise report is the fastest route to a fix.
+        **Never paste your notes, your database, API keys or file paths with your username.** Use made-up text that
+        reproduces the problem. Security problems: use the private link on the issue chooser instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: One or two sentences each.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, starting from a fresh install if you can. Synthetic notes only.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `hermind doctor --share`
+      description: "`--share` already removes home paths, your user name, profile names and executable paths. Still glance at it before pasting."
+      render: json
+  - type: dropdown
+    id: route
+    attributes:
+      label: How are you using Hermind?
+      options:
+        - MCP server (hermind-mcp)
+        - Hermes plugin
+        - Command line (hermind remember / search / export)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Which agent or client, and its version?
+      description: For example Claude Code 2.x, Cursor, Hermes.
+  - type: input
+    id: platform
+    attributes:
+      label: OS and Python version
+      placeholder: Linux, Python 3.12
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and read docs/limitations.md.
+          required: true
+        - label: My report contains no real notes, keys or personal paths.
+          required: true

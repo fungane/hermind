@@ -1,0 +1,32 @@
+name: "Client setup: it worked / it did not"
+description: Most client snippets in docs/setup.md were written from documentation and never run. Tell us what really happens.
+labels: ["client-report", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports that a snippet **works** are as useful as ones that fail: they let us move a client from "untested" to "tested".
+  - type: input
+    id: client
+    attributes:
+      label: Client and version
+      placeholder: Antigravity CLI 1.x, Codex, Cursor ...
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - It worked exactly as docs/setup.md says
+        - It worked after I changed something (describe below)
+        - It did not work
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What did you run, and what did you see?
+      description: The config you used (no secrets or personal paths) and the client's error or output.
+    validations:
+      required: true

@@ -1,0 +1,22 @@
+{
+ "_doc": "EXAMPLE of the format. Build your own from your usage log: real prompts, relevance labelled by hand against a COPY of your database; ids are note ids of that database. Keep your real set outside the repository (it contains your prompts). 'negative' prompts have no topic of their own: the ideal recall is empty.",
+ "topical": [
+  [
+   "how do we deploy the staging server",
+   [
+    1,
+    2
+   ]
+  ],
+  [
+   "which database did we pick for the project",
+   [
+    3
+   ]
+  ]
+ ],
+ "negative": [
+  "ok sounds good",
+  "what about the other one"
+ ]
+}

@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="352" viewBox="0 0 820 352" role="img" aria-label="Hermind 的運作：提示觸發召回，把幾條筆記放進提示；回覆觸發擷取並存進 SQLite；選配的夜間睡眠整理合併重複、取代過時事實（先模擬）；其他 agent 經 MCP server 使用同一個 SQLite 檔案。">
+<title>Hermind 的運作：提示觸發召回，把幾條筆記放進提示；回覆觸發擷取並存進 SQLite；選配的夜間睡眠整理合併重複、取代過時事實（先模擬）；其他 agent 經 MCP server 使用同一個 SQLite 檔案。</title>
+<style>
+  .bg{fill:#f6f8fa} .card{fill:#ffffff;stroke:#d0d7de} .t{fill:#1f2328} .m{fill:#656d76}
+  .acc{fill:#0969da} .accl{stroke:#0969da;fill:none} .ok{fill:#1a7f37} .okbg{fill:#dafbe1} .okl{stroke:#1a7f37}
+  .chip{fill:#eaeef2} .ub{fill:#0969da} .ubt{fill:#ffffff} .line{stroke:#8c959f;fill:none} .dim{opacity:.62}
+  .arrow{fill:#8c959f}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117} .card{fill:#161b22;stroke:#30363d} .t{fill:#e6edf3} .m{fill:#8b949e}
+    .acc{fill:#58a6ff} .accl{stroke:#58a6ff} .ok{fill:#3fb950} .okbg{fill:#12261e} .okl{stroke:#3fb950}
+    .chip{fill:#21262d} .ub{fill:#1f6feb} .line{stroke:#6e7681} .arrow{fill:#6e7681}
+  }
+  text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans CJK TC','PingFang HK','PingFang TC','Microsoft JhengHei',Helvetica,Arial,sans-serif} .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+</style>
+<rect class="bg" width="820" height="352" rx="14"/>
+<rect class="card" x="16" y="16" width="788" height="320" rx="12"/>
+<rect class="chip" x="40" y="47" width="110" height="30" rx="15"/>
+<text class="t" x="95.0" y="67" font-size="13.5" font-weight="600" text-anchor="middle">提示</text>
+<line class="line" x1="156" y1="62" x2="186" y2="62" stroke-width="1.6"/>
+<path class="arrow" d="M192 62 l-9 -5 v10 z"/>
+<rect class="card" x="196" y="32" width="330" height="60" rx="10" stroke-width="1.4"/>
+<text class="acc" x="214" y="56" font-size="15" font-weight="700">召回</text>
+<text class="m" x="214" y="76" font-size="12.5">BM25 + 實體 + 時間 + 選配向量</text>
+<line class="line" x1="532" y1="62" x2="562" y2="62" stroke-width="1.6"/>
+<path class="arrow" d="M568 62 l-9 -5 v10 z"/>
+<rect class="chip" x="572" y="32" width="208" height="60" rx="10" stroke-width="1.2"/>
+<text class="t" x="676.0" y="67" font-size="13.5" font-weight="600" text-anchor="middle">幾條筆記放進提示</text>
+<rect class="chip" x="40" y="123" width="110" height="30" rx="15"/>
+<text class="t" x="95.0" y="143" font-size="13.5" font-weight="600" text-anchor="middle">回覆</text>
+<line class="line" x1="156" y1="138" x2="186" y2="138" stroke-width="1.6"/>
+<path class="arrow" d="M192 138 l-9 -5 v10 z"/>
+<rect class="card" x="196" y="108" width="330" height="60" rx="10" stroke-width="1.4"/>
+<text class="acc" x="214" y="132" font-size="15" font-weight="700">擷取</text>
+<text class="m" x="214" y="152" font-size="12.5">規則，或選配的 LLM 擷取</text>
+<line class="line" x1="532" y1="138" x2="562" y2="138" stroke-width="1.6"/>
+<path class="arrow" d="M568 138 l-9 -5 v10 z"/>
+<rect class="okbg okl" x="572" y="108" width="208" height="60" rx="10" stroke-width="1.2"/>
+<text class="ok" x="676.0" y="143" font-size="13.5" font-weight="600" text-anchor="middle">存進一個 SQLite 檔案</text>
+<rect class="chip" x="40" y="199" width="110" height="30" rx="15"/>
+<text class="t" x="95.0" y="219" font-size="13.5" font-weight="600" text-anchor="middle">夜間</text>
+<line class="line" x1="156" y1="214" x2="186" y2="214" stroke-width="1.6"/>
+<path class="arrow" d="M192 214 l-9 -5 v10 z"/>
+<rect class="card" x="196" y="184" width="330" height="60" rx="10" stroke-width="1.4"/>
+<text class="acc" x="214" y="208" font-size="15" font-weight="700">睡眠整理（選配）</text>
+<text class="m" x="214" y="228" font-size="12.5">合併重複、取代過時事實</text>
+<line class="line" x1="532" y1="214" x2="562" y2="214" stroke-width="1.6"/>
+<path class="arrow" d="M568 214 l-9 -5 v10 z"/>
+<rect class="chip" x="572" y="184" width="208" height="60" rx="10" stroke-width="1.2"/>
+<text class="t" x="676.0" y="219" font-size="13.5" font-weight="600" text-anchor="middle">先模擬，由你審閱</text>
+<rect class="chip" x="40" y="275" width="110" height="30" rx="15"/>
+<text class="t" x="95.0" y="295" font-size="13.5" font-weight="600" text-anchor="middle">其他 agent</text>
+<line class="line" x1="156" y1="290" x2="186" y2="290" stroke-width="1.6"/>
+<path class="arrow" d="M192 290 l-9 -5 v10 z"/>
+<rect class="card" x="196" y="260" width="330" height="60" rx="10" stroke-width="1.4"/>
+<text class="acc" x="214" y="284" font-size="15" font-weight="700">MCP server</text>
+<text class="m" x="214" y="304" font-size="12.5">預設唯讀，加 --write 才能寫</text>
+<line class="line" x1="532" y1="290" x2="562" y2="290" stroke-width="1.6"/>
+<path class="arrow" d="M568 290 l-9 -5 v10 z"/>
+<rect class="okbg okl" x="572" y="260" width="208" height="60" rx="10" stroke-width="1.2"/>
+<text class="ok" x="676.0" y="295" font-size="13.5" font-weight="600" text-anchor="middle">同一個 SQLite 檔案</text>
+</svg>

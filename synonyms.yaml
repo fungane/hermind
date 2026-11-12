@@ -1,0 +1,501 @@
+# hermind query expansion table. One group per line: "term: alt1|alt2|..."
+# Every member of a group expands to every other member (both directions) at search time, and the importer uses it
+# to generate keywords. Keep entries GENERAL (Cantonese <-> written Chinese <-> English); never add answers to
+# specific questions. Lines starting with # are comments.
+
+# --- Cantonese colloquial -> written Chinese ---
+點算: 怎麼辦|如何處理|處理|對策|應對
+點樣: 怎樣|如何|怎麼
+點解: 為什麼|為何|原因
+咩事: 什麼事|發生什麼|問題|原因
+係咪: 是不是|是否
+有冇: 有沒有|是否有
+冇: 沒有|無
+唔: 不
+嘢: 東西|資料|內容
+啲嘢: 東西|資料
+睇: 看|查看|讀取
+畀: 給
+攞: 拿|取得|獲取
+搵: 找|尋找|搜尋
+諗: 想|考慮
+傾: 談|討論|聊
+傾過: 討論過|談過|聊過
+講過: 說過|提過|討論過
+記得: 回想|記憶|記錄
+嗰個: 那個
+呢個: 這個
+而家: 現在|目前
+琴日: 昨天
+聽日: 明天
+今朝: 今天早上
+朝早: 早上|上午
+夜晚: 晚上
+幾點: 什麼時間|時間|時刻
+幾多: 多少|數量
+點先: 怎樣才
+慳: 省|節省|省錢|便宜
+平: 便宜|低成本|免費
+貴: 昂貴|成本高
+死咗: 下架|失效|壞|掛了|停止|不能用|故障
+壞咗: 故障|失效|壞|出錯
+當機: 停止|故障|崩潰|crash|掛了|停過|停機|down
+斷線: 中斷|斷開|失敗|disconnect
+撐得住: 承受|容量|負載|足夠|資源
+搞掂: 解決|完成|處理好
+未搞掂: 未解決|未完成|待處理|問題
+搞: 處理|設定|弄
+郁: 改動|修改|動
+改咗: 修改了|更改了|改動
+用緊: 正在使用|目前使用
+啱: 合適|正確|對
+揀: 選|選擇|挑選
+決定咗: 決定了|結論|定案
+結論: 決定|定案|決策|conclusion
+最後: 最終|結論
+建議: 推薦|建議|recommend
+否決: 拒絕|不採用|不建議|放棄
+另一個人: 別人|其他人|他人
+朋友: 他人|別人|其他用戶
+人哋: 別人|他人
+自己: 本人|我的
+屋企: 家|家裡
+返工: 上班|工作
+收到消息: 通知|推送|訊息|報告
+消息: 訊息|通知|新聞
+新聞: 消息|報導|資訊|news
+
+# --- concepts / tech (written Chinese <-> English) ---
+搬家: 遷移|搬遷|migrate|migration|轉移
+遷移: migrate|migration|搬遷
+服務器: 伺服器|VPS|server|主機
+伺服器: server|VPS|主機
+機器人: bot|機械人
+記憶: memory|記憶體
+記憶體: RAM|memory|內存
+內存: RAM|記憶體
+硬碟: 磁碟|disk|storage|儲存
+上下文: context|語境
+壓縮: compress|compression|壓縮上下文
+代理: agent|代理工具
+模型: model|LLM
+免費: free|免費模型
+下架: 停用|移除|delisted|deprecated
+備選: 備用|後備|fallback|替代|backup
+排程: 定時|cron|schedule|排期
+定時: cron|schedule|排程
+早上: 上午|早晨|morning
+報告: 報表|report|摘要
+隔離: 分開|獨立|isolation|區隔
+權限: permission|管理員|admin
+私隱: 隱私|privacy|保密
+網關: 閘道|gateway
+閘道: gateway
+訊息服務: 閘道|gateway|messaging
+重啟: restart|重新啟動|reboot
+錯誤: error|報錯|出錯|失敗
+失敗: 錯誤|fail|failed|中斷
+大檔: 大檔案|大文件|large file
+檔案: 文件|file
+上傳: upload|傳送
+傳: 傳送|傳輸|上傳|transfer
+網絡: 網路|network|Wi-Fi|連線
+連線: 連接|connection|網絡
+寫劇本: 編劇|劇本|screenplay|script
+劇本: 編劇|劇情|screenplay
+要求: 偏好|規則|習慣|格式
+偏好: 喜好|習慣|preference|要求
+語言: 中文|英文|language
+繁體: 繁體中文|Traditional Chinese
+醫療器械: 醫療器材|醫療設備|medical device|醫療產品
+賣點: 定位|價值|優勢|特點
+界線: 界限|限制|範圍|邊界
+試驗: 臨床試驗|研究|trial|實驗
+研究: 試驗|研究項目|research|study
+網上: 網絡|線上|網路|公開
+食物: 飲食|食品
+分工: 分配|角色|負責
+調度: 路由|分派|routing|router
+調度表: 路由表|配置表|routing table
+未確認: 待確認|未驗證|unconfirmed|pending
+手機: 電話|phone
+副號: 第二號碼|副卡|second number
+微信: WeChat|weixin
+
+# --- v0.2: more general Cantonese colloquial -> written Chinese ---
+閂: 關|關閉|關掉|close|shut
+閂咗: 關閉了|關掉了|closed
+開返: 重新開啟|重開|reopen
+壞返: 又壞|再次失效|復發|再出問題|regression
+修好: 修復|修補|修正|fix|fixed|patch
+又: 再次|重新|again
+冇咗: 沒有了|失去|消失|不見了|下架|失效
+頂: 頂替|替代|代替|替補
+頂替: 替代|代替|備用|fallback|replace
+擺: 放|存放|放置|擺放
+分開: 隔離|區分|分離|獨立|separate
+邊度: 哪裡|哪兒|在哪|位置|where|路徑
+邊個: 誰|哪個|哪一個|who|which
+邊啲: 哪些|which
+咩: 什麼|甚麼|what
+交俾: 交給|委派|交由|轉交|delegate
+俾: 給|讓
+食: 佔用|消耗|吃
+幾時: 什麼時候|何時|日期|時間|when
+剩返: 剩下|剩餘|剩|還有|remaining|free|available
+仲有: 還有|尚有|剩下|仍有
+幾蚊: 多少錢|價錢|價格|price|cost
+月租: 月費|每月|monthly|per month
+起動: 啟動|開始運行|start|started|launch
+連唔到: 連不上|無法連接|連線失敗|cannot connect|connection failed|refused
+唔生效: 不生效|無效|沒作用|not working|不起作用
+點運作: 如何運作|運作方式|怎樣運作|how it works|機制|流程
+出咩錯: 什麼錯誤|出錯|報錯|error
+清: 清理|清除|刪除|clean|cleanup
+碟: 硬碟|磁碟|disk|storage
+留住: 保留|留著|殘留|keep|leftover
+塞入: 注入|插入|放入|inject
+
+# --- v0.2: more concepts (written Chinese <-> English) ---
+終端機: 終端|終端視窗|terminal|console|命令列
+終端: terminal|console|終端機
+隧道: tunnel|通道
+編譯: compile|build|建置|構建
+語音: voice|speech|audio|聲音
+本地: 本機|local|離線
+程序: 進程|程式|process
+進程: process|程序
+被封: 封鎖|封禁|blocked|banned|blacklist|黑名單
+封鎖: block|blocked|ban|blacklist
+詐騙: 欺詐|fraud|scam|詐欺
+風險: risk|危險|風控
+危險: 風險|risk|dangerous|不安全
+更新: update|升級|upgrade
+升級: upgrade|update
+修補: patch|修復|fix
+覆蓋: overwrite|蓋掉|overwritten
+改: 修改|更改|設定|change|edit
+設定: 配置|config|configuration|settings
+配置: config|設定|configuration
+密碼: password|口令
+免密碼: 無密碼|免密|金鑰登入|passwordless|ssh key
+連: 連接|連線|connect
+桌面: desktop|桌面版
+遠端: 遠程|remote
+份量: 數量|大小|上限|限制|budget
+調: 調整|tune|adjust
+額度: 配額|quota|用量|限額|usage|limit
+感測器: 傳感器|感應器|sensor
+買到: 購買|上市|商用|available|量產
+驗證: verification|verify|認證
+電話: 手機|phone|號碼
+供應商: provider|vendor|服務商|廠商
+抽取: 提取|擷取|extraction|extract
+停用: 禁用|disabled|disable|停止使用
+技能: skill|skills
+外掛: 插件|plugin|擴充|extension
+插件: plugin|外掛|擴充
+生效: 有效|起作用|apply|applied
+頁尾: footer|頁腳|底部
+結果: 成果|result|outcome
+系統: system|作業系統|OS
+舊: 舊的|old|stale|過時
+自動: auto|automatic|自動化
+回憶: 回想|recall
+空間: space|容量|storage
+App: 應用|應用程式|app
+能力: capability|ability|能做
+超出: 超過|超越|beyond|exceed
+運作: 運行|運轉|work|機制
+
+# --- general English vocabulary (work / study / tech / daily life). Generic word families only. ---
+report: write-up|writeup|paper|document|essay
+deadline: due date|cut-off|cutoff|due|closing date
+equipment: hardware|gear|devices
+budget: money|funding|cost|spend|price
+permission: approval|consent|authorization|authorisation|allowed
+meeting: call|catch-up|check-in|stand-up|session
+presentation: talk|demo|pitch|slides
+exam: test|viva|defence|defense|assessment
+grade: mark|score|result|marks
+password: secret|credential|credentials|api key|token
+database: db|datastore|sql|postgres|sqlite
+bug: error|defect|issue|crash|problem|fault
+test: check|verify|validation|qa
+tests: checks|verification|coverage
+fps: frame rate|framerate|frames per second
+lighting: light|lit|illumination|brightness
+frame rate: fps|framerate
+measure: metric|measurement|compute|quantify
+feature: function|capability|characteristic|attribute
+schema: structure|model|migration|migrations
+deploy: release|ship|publish|launch
+server: host|hosting|machine|vps
+cloud: hosting|remote|online
+login: sign in|signin|authentication|auth|log in
+speed: fast|quick|performance|latency|load time
+slow: lag|delay|latency|sluggish
+fast: quick|speed|rapid
+notify: alert|notification|notifications|ping|message
+notification: alert|ping|message|reminder
+complaint: problem|issue|pain point|frustration|dislike
+interview: survey|talk|conversation|questionnaire
+design: sketch|mockup|wireframe|prototype|layout
+review: check|feedback|assess|inspect
+backup: copy|archive|snapshot|save
+save: store|keep|record|persist
+delete: remove|erase|discard|drop
+store: keep|save|put|located|live|lives
+located: stored|saved|found|live|lives
+supervisor: advisor|adviser|tutor|professor|mentor
+tutor: teacher|supervisor|advisor|instructor
+participant: volunteer|subject|person|people|user
+volunteer: participant|subject
+private: confidential|anonymous|anonymised|secret|hidden
+anonymous: anonymised|anonymized|private|identity
+rule: policy|guideline|requirement|constraint
+requirement: need|must|rule|constraint
+goal: target|aim|objective|aims|target
+price: cost|fee|charge|pay|paid
+cost: price|fee|charge|pay|paid|expense
+help: assist|support|aid
+choose: pick|select|decide|chose|chosen
+chose: choose|picked|selected|decided|chosen
+decide: choose|pick|agree|agreed
+agreed: decided|chose|settled
+omh: oh my hermes|oh-my-hermes
+oh my hermes: omh|oh-my-hermes
+
+# --- more general English vocabulary: everyday words and their common paraphrases (no answers to specific questions) ---
+staging: test server|test environment|pre-production|preprod|sandbox
+launch: go live|go-live|release|rollout|roll out|ship|publish
+rollout: launch|release|deployment|gradual release
+offline: no internet|no connection|without network|no network|disconnected|airplane mode
+network: internet|connection|wifi|wi-fi|online|broadband
+internet: network|connection|wifi|wi-fi|broadband|online
+broadband: internet|fibre|fiber|isp|provider|wifi|plan
+ticket: request|issue|case|support request|complaint|enquiry|inquiry
+customer: client|user|buyer|account|consumer
+client: customer|account|buyer
+employee: staff|worker|team member|colleague|hire|new hire
+staff: employee|team|worker|personnel
+onboarding: induction|orientation|getting started|new hire|first week
+retrospective: retro|review meeting|sprint review|post-mortem|postmortem|look back
+standup: stand-up|daily meeting|daily sync|check-in
+documentation: docs|manual|guide|readme|wiki|handbook
+screenshot: screen capture|screen shot|image|picture|screengrab
+image: picture|photo|graphic|screenshot|figure
+picture: image|photo|graphic|figure
+figure: plot|chart|graph|diagram|illustration|image
+chart: plot|graph|figure|diagram|visualisation|visualization
+plot: chart|graph|figure|diagram|draw
+paper: manuscript|article|draft|publication|report|submission
+manuscript: paper|draft|article|submission
+citation: reference|references|bibliography|cite|sources
+reference: citation|source|bibliography|cite
+referee: reviewer|peer reviewer|reviewer 2|examiner
+reviewer: referee|examiner|checker|peer reviewer
+ablation: extra experiment|control experiment|removal study
+gpu: graphics card|graphics machine|graphics machines|graphics processing|accelerator|cuda|compute
+cluster: machines|servers|farm|compute
+checkpoint: saved model|snapshot|saved state|weights
+crash: fail|failure|die|died|break|broke|broken|error
+fail: crash|error|break|broke|broken|stop working|stopped working
+broke: failed|crash|crashed|broken|error|stopped working
+fix: repair|patch|solve|resolve|hotfix|correct|workaround
+repair: fix|mend|service|patch
+workaround: stopgap|temporary fix|quick fix|patch
+stopgap: workaround|temporary fix|quick fix
+leak: growth|keeps growing|runaway|drain
+ram: memory|working memory
+disk: storage|drive|space|ssd|hard drive
+storage: disk|space|drive|bucket|object storage
+space: room|capacity|storage|disk
+full: out of space|no space left|exhausted
+limit: cap|maximum|max|ceiling|quota|threshold
+cap: limit|maximum|ceiling|quota
+maximum: max|limit|cap|at most|up to
+minimum: min|at least|lowest
+quota: limit|allowance|cap
+alert: notification|warning|alarm|ping|notify
+alarm: alert|siren|detector|warning
+detector: sensor|alarm|monitor
+smoke: fire|fire alarm|smoke detector|smoke alarm
+fire: smoke|alarm|fire alarm|blaze
+doctor: physician|gp|clinic|medical|health check|check-up|checkup|appointment
+appointment: booking|reservation|slot|visit|check-up|checkup
+check-up: checkup|health check|medical|doctor|physical|exam
+health: medical|doctor|clinic|wellbeing|wellness
+allergy: allergic|allergen|intolerance|reaction
+allergic: allergy|allergen|intolerance|reaction
+food: meal|meals|groceries|dinner|lunch|eating|menu
+groceries: food|shopping|supermarket|supplies
+meal: food|dinner|lunch|breakfast
+car: automobile|vehicle|auto|motor
+automobile: car|vehicle
+vehicle: car|automobile|bike|van
+flat: apartment|home|rental|house|place
+apartment: flat|home|rental|house|place|unit
+landlord: owner|lessor|property owner|letting agent
+rent: lease|rental|tenancy|housing payment
+lease: rent|rental|tenancy|contract
+washing machine: washer|laundry machine
+dishwasher: dish washer|dishes machine|plates machine
+fridge: refrigerator|freezer|cooler
+heating: heater|radiator|warmth|thermostat|boiler
+thermostat: heating|temperature|degrees
+temperature: degrees|warm|cold|heat|thermostat
+warm: temperature|degrees|heat|heated|hot
+energy: electricity|power|utility|utilities|bills
+electricity: power|energy|utility|bills
+bill: invoice|statement|charge|payment|invoice
+invoice: bill|statement|payment|charge|billing
+payment: pay|paid|billing|invoice|transfer|charge|fee
+transfer: wire|bank transfer|send money|payment
+holiday: vacation|leave|time off|day off|away|trip
+vacation: holiday|leave|time off|trip|away
+leave: holiday|vacation|time off|absence|away
+away: holiday|vacation|leave|out of office|absent|off
+cover: replace|stand in|substitute|take over|deputise|deputize
+on-call: pager|rota|rotation|duty|standby
+flight: plane|airline|trip|travel|departure|ticket
+travel: trip|journey|flight|go|visit
+trip: travel|journey|visit|holiday|flight
+due: deadline|expire|expires|expiry|by|hand in|submit
+expire: run out|lapse|end|ends|expiry|renew|renewal
+expiry: expiration|end date|expires|renewal|valid until
+renew: renewal|extend|extension|refresh|re-book
+renewal: renew|extension|extend|new term|refresh
+contract: agreement|deal|plan|terms|subscription
+agreement: contract|deal|arrangement|terms|settled
+subscription: plan|contract|membership|billing|recurring
+provider: vendor|supplier|company|host|operator
+vendor: supplier|provider|company|third party
+company: firm|business|startup|organisation|organization|employer
+startup: company|business|firm|spinoff
+third-party: external|vendor|outside|3rd party
+external: outside|third-party|third party|outsider
+license: licence|terms of use|permission|rights|copyright
+licence: license|terms of use|permission|rights|copyright
+commercial: business|for profit|paid|monetised|monetized|company
+share: give|hand over|send|distribute|publish|release|pass on
+hand in: submit|turn in|deliver|send in|give in
+submit: hand in|turn in|upload|send in|file|deliver
+draft: version|manuscript|outline|working copy|first version
+author: writer|contributor|credit|byline
+credit: authorship|attribution|acknowledge|first author|byline
+first author: lead author|main author|listed first|first name
+experiment: trial|run|test|study|job
+run: job|experiment|execution|session|process
+job: run|task|process|training run|batch
+training: learning|fitting|model training|train
+seed: random seed|randomness|rng|reproducibility
+log: record|track|write down|history|journal
+track: monitor|follow|log|record|keep an eye on
+monitor: track|watch|observe|supervise|dashboard
+dashboard: monitoring|panel|overview|metrics
+tool: software|app|program|utility|library|package|application
+library: package|module|dependency|framework|sdk
+dependency: package|library|requirement|module
+cite: reference|citation|credit|mention
+copy: duplicate|clone|backup|replicate|sync|back up
+sync: synchronise|synchronize|copy|mirror|keep in step
+safe: secure|protected|backed up|safekeeping|safety
+security: safety|protection|privacy|secure|safe|risk
+secure: safe|protected|locked|security|hardened
+phishing: scam|fraud|spoof|fake email
+two-factor: 2fa|mfa|second step|second factor|multi-factor|otp
+2fa: two-factor|mfa|second step|second factor|multi-factor|otp
+login step: sign-in step|authentication step
+rotate: change regularly|renew|cycle|refresh|replace regularly
+secret: credential|key|password|token|confidential
+key: credential|token|secret|api key|password
+region: location|zone|area|datacenter|data center|country
+location: place|region|where|site|address|stored
+cache: store|buffer|copy|cdn|keep
+cdn: content delivery|edge|cache|static files
+index: lookup|speed up|database index|search structure
+query: search|request|lookup|question|sql
+endpoint: api|route|url|service
+api: endpoint|interface|service|rest|graphql
+review: code review|check|approval|approve|feedback
+approval: approve|signoff|sign-off|permission|consent|go-ahead
+reviewers: approvers|people who check|checkers
+pull request: pr|merge request|change|patch
+change: modification|update|edit|alter|switch
+switch: change|move|migrate|swap|move away|replace
+migrate: move|switch|transition|port|change over
+move: switch|migrate|relocate|transfer|shift
+replace: swap|substitute|switch|change|swap out
+remove: delete|drop|take out|get rid of|strip|eliminate
+strip: remove|delete|take out
+reduce: cut|lower|decrease|shrink|trim|minimise|minimize|improve
+improve: enhance|boost|better|speed up|optimise|optimize|reduce
+optimise: improve|speed up|tune|optimize|make faster
+faster: speed|quick|quicker|reduce load time|loading time|performance
+loading: load|load time|speed|startup|performance
+confused: unclear|puzzled|misunderstood|misunderstanding|confusing
+unclear: confusing|vague|ambiguous|confused
+reword: rewrite|rephrase|reword|change wording|copy change
+rewrite: reword|rephrase|redo|rework|revise
+price page: pricing|plans page|cost page
+pricing: price|prices|cost|plans|tariff|fees
+colour: color|colours|colors|palette|shade|theme
+color: colour|colours|colors|palette|shade|theme
+contrast: readable|legibility|visibility|accessibility|poor vision
+accessibility: a11y|readable|usable|poor vision|disability|screen reader|contrast
+theme: appearance|look|style|dark mode|light mode|colours|colors
+dark mode: dark theme|night mode|dark colours
+font: typeface|text style|lettering|monospace
+editor: ide|text editor|code editor|vim|vscode
+newsletter: mailing list|email list|subscribers|mailchimp|campaign
+signup: sign up|register|registration|subscribe|join|form
+form: signup|input|fields|questionnaire|survey
+survey: questionnaire|poll|form|responses|feedback form
+questionnaire: survey|poll|form|responses
+responses: answers|replies|results|data|feedback
+anonymised: anonymized|de-identified|made anonymous|stripped of names|private|anonymous
+data: records|information|responses|dataset|files
+dataset: data|corpus|data set|collection
+model: network|weights|ai|neural net|trained model|checkpoint
+duplicate: twice|repeat|repeated|double|again|dedupe
+twice: duplicate|two times|repeated|double
+idempotent: safe to repeat|repeatable|dedupe|duplicate-safe|once only
+callback: webhook|notification|ping back|hook
+webhook: callback|notification|ping back|hook|event
+onboard: induct|orient|welcome|get started
+new hire: new employee|newcomer|new starter|recruit|joiner
+laptop: computer|notebook|machine|device
+coffee: espresso|barista|caffeine|brew
+espresso: coffee|coffee machine|barista
+descaling: descale|cleaning|limescale|maintenance|clean
+clean: wash|descale|tidy|maintain|wipe
+cleaning: clean|wash|descale|tidying|maintenance
+maintenance: upkeep|servicing|service|cleaning|care
+replace filter: change filter|new filter|swap filter
+filter: strainer|screen|cartridge|mesh
+battery: cell|power cell|batteries
+batteries: battery|cells
+swap: replace|change|exchange|switch
+bike: bicycle|cycle|cargo bike|e-bike|ebike
+bicycle: bike|cycle
+buy: purchase|get|acquire|order|pick up
+purchase: buy|acquire|order|get
+used: second-hand|secondhand|pre-owned|second hand
+second-hand: used|preowned|pre-owned|secondhand
+instead of: rather than|in place of|not
+save energy: cut power|reduce electricity|save power|conserve
+groceries order: food order|shopping order
+weekly: every week|each week|per week|once a week
+monthly: every month|each month|per month|once a month
+yearly: annual|annually|every year|each year|per year
+annual: yearly|every year|each year|annually
+daily: every day|each day|per day|nightly|once a day
+nightly: every night|each night|overnight|daily
+night: overnight|nightly|evening|after hours
+morning: am|early|before noon|a.m.
+early: morning|before|at the start|first thing
+evening: night|after work|late|after hours|pm
+friday: end of week|weekend|week end
+weekend: saturday|sunday|friday evening|days off
+commute: travel to work|journey to work|transit|trip

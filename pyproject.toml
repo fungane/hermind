@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77"]   # SPDX `license` and `license-files` (PEP 639)
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermind"
+version = "1.0.0"
+description = "Hermind long-term memory (one SQLite file) as an MCP server for any MCP-capable agent; also a Hermes memory plugin."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "fungane" }]
+keywords = ["mcp", "memory", "agent", "sqlite"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+]
+dependencies = []          # standard library only
+
+[project.urls]
+Homepage = "https://github.com/fungane/hermind"
+Issues = "https://github.com/fungane/hermind/issues"
+Changelog = "https://github.com/fungane/hermind/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+encrypted = ["sqlcipher3"]   # database encryption, see docs/privacy.md#encryption
+
+[project.scripts]
+hermind-mcp = "hermind.hermind_mcp:main"
+hermind-hook = "hermind.hermind_hook:main"
+hermind = "hermind.hermind_cli:main"
+
+# The repository root is itself the `hermind` package (the Hermes plugin directory): __init__.py, store*.py, ...
+# so the wheel ships exactly those modules plus synonyms.yaml. tools/, tests/ and docs/ stay out of it.
+[tool.setuptools]
+packages = ["hermind"]
+package-dir = { "hermind" = "." }
+include-package-data = false
+
+[tool.setuptools.package-data]
+hermind = ["synonyms.yaml"]

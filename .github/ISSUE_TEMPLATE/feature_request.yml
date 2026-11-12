@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest something Hermind should do.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do that you cannot do today?
+      description: Describe the situation, not the solution. A concrete example helps most (made-up notes only).
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried instead?
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Fit
+      options:
+        - label: I read "Good fit / Not a fit" in the README's "Why Hermind" section and docs/limitations.md, and this is not something Hermind says it will not do.
+          required: true
