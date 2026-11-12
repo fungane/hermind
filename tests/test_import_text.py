@@ -1,6 +1,7 @@
 """SPEC-2 M2 and M3: outcomes that say what happened (edited / history / unreadable), metadata that cannot be used never
 blocks the text, and the Markdown reader that takes every text note of a folder (encodings, subjects, front matter)."""
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -32,10 +33,6 @@ def _load(name):
     spec.loader.exec_module(mod)
     return mod
 
-
-@pytest.fixture(scope="module")
-def export_md():
-    return _load("export_md")
 
 
 @pytest.fixture(scope="module")
@@ -196,13 +193,14 @@ def test_md_and_txt_with_the_same_text_are_one_new_and_one_duplicate(tmp_path):
     assert o["b.markdown"]["outcome"] == "new" and o["c.mdx"]["outcome"] == "new" and res["counts"]["new"] == 3
 
 
-def test_hand_written_index_md_is_a_note_but_the_exporters_are_passed_by(tmp_path, export_md):
+def test_hand_written_index_md_is_a_note_but_the_exporters_are_passed_by(tmp_path):
     db, out = tmp_path / "a.db", tmp_path / "out"
     s = DecisionStore(str(db))
     s.add("Nimbus backups run daily at 03:00 and keep 7 days.", "tech")
     s.add("Always answer Priya in plain English.", "preference")
     s.close()
-    export_md.run(export_md.build_parser().parse_args(["--db", str(db), "--out", str(out)]), out=io.StringIO())
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert hermind_cli.main(["export", "--db", str(db), "--format", "markdown", "--out", str(out)]) == 0
     n_idx = len(list(out.rglob("index.md")))
     assert n_idx >= 2
     put(out, "extra/index.md", "The ferry timetable is pinned to the kitchen door.\n")
@@ -414,7 +412,7 @@ def test_an_entry_with_a_scope_is_decided_in_that_scope(tmp_path):
 
 # -- M3 check 7: round trip ---------------------------------------------------------------------------------------------------
 
-def test_export_with_hidden_notes_imports_into_an_empty_database_as_the_same_notes(tmp_path, export_md):
+def test_export_with_hidden_notes_imports_into_an_empty_database_as_the_same_notes(tmp_path):
     a_db, b_db, out = tmp_path / "a.db", tmp_path / "b.db", tmp_path / "out"
     s = DecisionStore(str(a_db))
     edited, _ = s.add("Nimbus backups run daily at 03:00 and keep 7 days.", "tech", "nimbus backup")
@@ -422,7 +420,9 @@ def test_export_with_hidden_notes_imports_into_an_empty_database_as_the_same_not
     pinned, _ = s.add("Always answer Priya in plain English.", "preference", pinned=True, tags="style people")
     s.set_fields(pinned, trust=0.9)
     s.close()
-    export_md.run(export_md.build_parser().parse_args(["--db", str(a_db), "--out", str(out), "--include-hidden"]), out=io.StringIO())
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert hermind_cli.main(["export", "--db", str(a_db), "--format", "markdown", "--out", str(out),
+                                 "--include-history"]) == 0
     assert len([p for p in out.rglob("*.md") if p.name != "index.md"]) == 3
     prev = preview(out, b_db)
     assert prev["counts"]["new"] == 2 and prev["counts"]["history"] == 1

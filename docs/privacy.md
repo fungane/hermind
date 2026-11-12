@@ -44,7 +44,7 @@ What you should do:
 | `hermind audit-db` | Read-only scan of a database for credential-like values and personal data (patterns only; excerpts have personal data masked, and none is shown for credentials). Existing notes are not re-checked on their own; run it when you want to know |
 | Notes are data | Text returned to an agent is wrapped with a reminder that notes are not instructions, and instruction-like lines in stored text are defanged. This reduces prompt-injection risk; it cannot remove it |
 | Read-only MCP | Write tools are not advertised unless you pass `--write`, and a call to one fails as an unknown tool |
-| Recall log | `recall_shown` holds note ids and ranks only. The question text it points to is the 200-character query kept in `usage_log` for 90 days (`<private>` text stripped). Nothing leaves the machine; `tools/mine_eval.py` writes its output only to a private file outside git checkouts |
+| Recall log | `recall_shown` holds note ids and ranks only. The question text it points to is the 200-character query kept in `usage_log` for 90 days (`<private>` text stripped). Nothing leaves the machine |
 
 These controls are pattern-based, and a `<private>` tag only protects what you wrap. A memory agent that is told something
 false can write it down: the review step holds the few notes that look like an attack so that a person, not the agent,

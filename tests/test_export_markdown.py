@@ -1,6 +1,4 @@
-"""SPEC-4 M3: `hermind export --format markdown --out DIR` writes the same folder as tools/export_md.py."""
-import importlib.util
-import io
+"""SPEC-4 M3: `hermind export --format markdown --out DIR`: the folder layout, every option, a fixed clock."""
 import json
 import sys
 from pathlib import Path
@@ -26,13 +24,6 @@ def db(tmp_path):
     return path
 
 
-@pytest.fixture
-def script():
-    spec = importlib.util.spec_from_file_location("export_md_script", ROOT / "tools" / "export_md.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
 
 @pytest.fixture(autouse=True)
 def fixed_clock(monkeypatch):
@@ -49,21 +40,18 @@ def by_command(db, out, *flags):
     assert hermind_cli.main(["export", "--db", str(db), "--format", "markdown", "--out", str(out), *flags]) == 0
 
 
-def by_script(script, db, out, *flags):
-    assert script.run(script.build_parser().parse_args(["--db", str(db), "--out", str(out), *flags]), out=io.StringIO()) == 0
 
-
-@pytest.mark.parametrize("command_flags, script_flags", [
-    ((), ()),
-    (("--include-history",), ("--include-hidden",)),
-    (("--by", "entity"), ("--by", "entity")),
-    (("--by", "entity", "--include-history", "--scope", "work"), ("--by", "entity", "--include-hidden", "--scope", "work")),
-    (("--scope", "default"), ("--scope", "default")),
+@pytest.mark.parametrize("flags", [
+    (),
+    ("--include-history",),
+    ("--by", "entity"),
+    ("--by", "entity", "--include-history", "--scope", "work"),
+    ("--scope", "default"),
 ])
-def test_the_command_and_the_script_write_byte_identical_folders(tmp_path, db, script, command_flags, script_flags):
-    a, b = tmp_path / "by-command", tmp_path / "by-script"
-    by_command(db, a, *command_flags)
-    by_script(script, db, b, *script_flags)
+def test_every_option_writes_a_folder_twice_the_same(tmp_path, db, flags):
+    a, b = tmp_path / "first", tmp_path / "second"
+    by_command(db, a, *flags)
+    by_command(db, b, *flags)
     got = folder_bytes(a)
     assert got and got == folder_bytes(b)
     assert json.loads((a / ".hermind-export.json").read_text())["exported"] == CLOCK

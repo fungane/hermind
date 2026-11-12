@@ -26,8 +26,8 @@ and how well it recalls in the maintainer's own tests.
 | **Lifecycle** | News expires in 14 days and chat in 90. Decisions, preferences and tech notes never expire. Idle chat, news and state notes lose rank slowly if nobody recalls them; progress snapshots ("user is working on...") fade faster |
 | **Review queue** | Notes written by LLM extraction start as `[pending]`: searchable, ranked x0.6, marked in results. `memory_review` lists, confirms, rejects and restores them |
 | **Core memory** | A deterministic block (no LLM) of pinned notes and the highest-trust preferences, capped at `core_summary_chars` (3500), added to the system prompt each session |
-| **Recall log** | Each search or automatic recall records which note ids it listed (ids and rank only), and a later `memory_get` or helpful feedback records which listing led to it. With the question text already kept in `usage_log` (200 characters, 90 days, `<private>` stripped) this is a real question-to-right-note history; `tools/mine_eval.py` can turn it into a private eval set |
-| **Open-rate prior** | Notes the agent opens after they were listed rank slightly higher, ignored ones slightly lower: smoothed rate against the corpus rate, only after 5 shows, 90-day decay, **never more than ±10 %**. `tools/usage_report.py` shows its effect |
+| **Recall log** | Each search or automatic recall records which note ids it listed (ids and rank only), and a later `memory_get` or helpful feedback records which listing led to it. With the question text already kept in `usage_log` (200 characters, 90 days, `<private>` stripped) this is a real question-to-right-note history |
+| **Open-rate prior** | Notes the agent opens after they were listed rank slightly higher, ignored ones slightly lower: smoothed rate against the corpus rate, only after 5 shows, 90-day decay, **never more than ±10 %** |
 | **Quiet recall** | One-word replies such as "OK", "可以", "做吧" do not trigger a lookup (they are still stored: they are often approvals). Filler (謝謝, 幫我, 一下 ...) is ignored and generic task words (問題, 排查 ...) count less; prompts with no topic word, image-only messages and background-process notices recall nothing. Empty results tell the model not to loop |
 | **Hygiene** | Secret screen over the whole turn, masked-credential refusal, forget tombstones, injected-memory stripping, fence-tag defanging, future source dates kept as event dates, scopes and tags. See [Privacy](privacy.md) |
 | **Import and export** | `hermind import` previews and adds notes from other tools, with one outcome per entry, a backup first and a way back; `hermind export` writes everything as JSON, entity lines or Markdown. See [Import, export and backup](import-export.md) |
@@ -115,7 +115,7 @@ The provider appends the block, inside the `<hermind-context>` fence, to the sys
 scope and rebuilt after any write by any connection, or when the hour changes.
 
 **Offline tools that write.** `tools/sleep_consolidate.py` (LLM) proposes merges, supersessions and aggregate facts; every
-proposal is validated in code, aggregates are new pending notes, nothing is deleted. `tools/export_md.py` and
+proposal is validated in code, aggregates are new pending notes, nothing is deleted. `hermind export --format markdown` and
 `tools/import_md.py` round-trip notes through Markdown files with YAML front matter: import compares the file's fields with
 the note, uses the `rev` fingerprint to tell a file edit from a database change (conflicts are reported, not applied), and
 sends text changes through `update()` so history is kept. Details in [Setup](setup.md#optional-llm-tools) and
@@ -128,7 +128,7 @@ sends text changes through `update()` so history is kept. Details in [Setup](set
 - `memory_forget` deletes the note, its merged duplicates and edit history, and leaves tombstones. Rejecting a pending note
   (`memory_review`) is the reversible alternative: the note stays, hidden.
 - `memory_update` keeps the previous text as a hidden `version_of` row.
-- Offline tools (`backfill_aliases`, `build_summaries`, `embed_all`) are never run from the search path.
+- Offline tools (`backfill_aliases`, `build_summaries`, `hermind embed-all`) are never run from the search path.
 
 ## Module map
 
@@ -185,7 +185,7 @@ sends text changes through `update()` so history is kept. Details in [Setup](set
 | `import_hindsight.py` | one-off migration of an exported memory bank into a new Hermind database (see [Setup](setup.md#hermes-plugin)) |
 | `text_blocks.py` | the block splitter of `hermind import`: a text becomes blocks with their heading paths |
 | `export_notes.py` | `hermind export`: the full JSON export and the entity and observation lines (`jsonl`); read-only |
-| `md_export.py` | the writing code of the Markdown export, used by `hermind export --format markdown` and `tools/export_md.py` |
+| `md_export.py` | the writing code of the Markdown export, used by `hermind export --format markdown` |
 | `md_notes.py` | shared Markdown note-file helpers: front matter, folder walk, decoding, subjects |
 
 ## How well does it recall

@@ -1,5 +1,6 @@
 """The Markdown reader of `hermind import`, and the three changes to tools/import_md.py (md_notes.py, import_readers.py)."""
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -32,10 +33,6 @@ def _load(name):
     return mod
 
 
-@pytest.fixture(scope="module")
-def export_md():
-    return _load("export_md")
-
 
 @pytest.fixture(scope="module")
 def import_md():
@@ -48,9 +45,9 @@ def clean(monkeypatch):
         monkeypatch.delenv(k, raising=False)
 
 
-def export(export_md, db, out, *flags):
-    buf = io.StringIO()
-    assert export_md.run(export_md.build_parser().parse_args(["--db", str(db), "--out", str(out), *flags]), out=buf) == 0
+def export(db, out, *flags):
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert hermind_cli.main(["export", "--db", str(db), "--format", "markdown", "--out", str(out), *flags]) == 0
 
 
 def tool_import(import_md, db, folder, *flags):
@@ -91,10 +88,10 @@ def dump(db):
 
 # -- M2 check 1: an exported folder comes into an empty database -----------------------------------------------------------
 
-def test_exported_folder_imports_into_an_empty_database_under_new_ids(tmp_path, export_md):
+def test_exported_folder_imports_into_an_empty_database_under_new_ids(tmp_path):
     a_db, b_db, out = tmp_path / "a.db", tmp_path / "b.db", tmp_path / "out"
     three_notes(a_db)
-    export(export_md, a_db, out)
+    export(a_db, out)
     prev = import_core.run_import(str(out), b_db)
     assert prev["reader"] == "markdown" and prev["reader_detected"] and prev["counts"]["new"] == 3
     assert not b_db.exists()                                               # a preview does not even create it
@@ -115,10 +112,10 @@ def test_exported_folder_imports_into_an_empty_database_under_new_ids(tmp_path, 
 
 # -- M2 check 2: the same folder into the database it came from ---------------------------------------------------------------
 
-def test_the_same_folder_into_its_own_database_is_all_same(tmp_path, export_md):
+def test_the_same_folder_into_its_own_database_is_all_same(tmp_path):
     db, out = tmp_path / "a.db", tmp_path / "out"
     ids = three_notes(db)
-    export(export_md, db, out)
+    export(db, out)
     before = dump(db)
     prev = import_core.run_import(str(out), db)
     assert prev["counts"]["duplicate"] == 3 and prev["counts"]["new"] == 0
@@ -128,10 +125,10 @@ def test_the_same_folder_into_its_own_database_is_all_same(tmp_path, export_md):
     assert dump(db) == before
 
 
-def test_an_edited_copy_is_reported_and_never_applied(tmp_path, export_md):
+def test_an_edited_copy_is_reported_and_never_applied(tmp_path):
     db, out = tmp_path / "a.db", tmp_path / "out"
     a, b, c = three_notes(db)
-    export(export_md, db, out)
+    export(db, out)
     f = next(out.rglob(f"{a:05d}-*.md"))
     f.write_text(f.read_text(encoding="utf-8").replace("keep 7 days", "keep 30 days"), encoding="utf-8")
     before = dump(db)
@@ -143,10 +140,10 @@ def test_an_edited_copy_is_reported_and_never_applied(tmp_path, export_md):
     assert "edited copy of #" in hermind_cli.import_text(res)
 
 
-def test_an_older_version_of_a_note_still_belongs_to_it(tmp_path, export_md):
+def test_an_older_version_of_a_note_still_belongs_to_it(tmp_path):
     db, out = tmp_path / "a.db", tmp_path / "out"
     a, b, c = three_notes(db)
-    export(export_md, db, out)
+    export(db, out)
     s = DecisionStore(str(db))
     s.update(a, "Nimbus backups run daily at 04:00 and keep 7 days.")       # the database moves on after the export
     s.close()
@@ -241,10 +238,10 @@ def test_import_md_dry_run_reports_what_apply_then_does(tmp_path, import_md):
 
 # -- M2 check 5: edit-sync still works ---------------------------------------------------------------------------------------------
 
-def test_edit_sync_still_updates_the_note_with_history(tmp_path, export_md, import_md):
+def test_edit_sync_still_updates_the_note_with_history(tmp_path, import_md):
     db, out = tmp_path / "a.db", tmp_path / "out"
     a, b, c = three_notes(db)
-    export(export_md, db, out)
+    export(db, out)
     f = next(out.rglob(f"{a:05d}-*.md"))
     f.write_text(f.read_text(encoding="utf-8").replace("keep 7 days", "keep 14 days"), encoding="utf-8")
     code, text = tool_import(import_md, db, out)
@@ -259,10 +256,10 @@ def test_edit_sync_still_updates_the_note_with_history(tmp_path, export_md, impo
     assert tool_import(import_md, db, out, "--apply")[1].count("unchanged") == 1                         # now a no-op
 
 
-def test_edit_sync_refuses_an_edit_that_would_store_a_secret_in_the_dry_run_too(tmp_path, export_md, import_md):
+def test_edit_sync_refuses_an_edit_that_would_store_a_secret_in_the_dry_run_too(tmp_path, import_md):
     db, out = tmp_path / "a.db", tmp_path / "out"
     a, b, c = three_notes(db)
-    export(export_md, db, out)
+    export(db, out)
     f = next(out.rglob(f"{a:05d}-*.md"))
     f.write_text(f.read_text(encoding="utf-8").replace("keep 7 days", SECRET), encoding="utf-8")
     code, dry = tool_import(import_md, db, out)
@@ -343,11 +340,11 @@ def test_exclude_matches_relative_paths_and_revert_works_for_markdown(tmp_path):
     assert len(out["remove"]) == 1 and rows_all(db) == []
 
 
-def test_cli_end_to_end_in_a_subprocess(tmp_path, export_md):
+def test_cli_end_to_end_in_a_subprocess(tmp_path):
     import subprocess
     a_db, out = tmp_path / "a.db", tmp_path / "out"
     three_notes(a_db)
-    export(export_md, a_db, out)
+    export(a_db, out)
     b_db = tmp_path / "b.db"
     run = lambda *args: subprocess.run([sys.executable, str(ROOT / "hermind_cli.py"), "import", *args], capture_output=True,
                                        text=True, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}, timeout=120)
@@ -361,10 +358,3 @@ def test_cli_end_to_end_in_a_subprocess(tmp_path, export_md):
     r = run("--readers")
     assert r.returncode == 0 and "markdown" in r.stdout
 
-
-def test_tools_mdnotes_still_imports_and_is_the_packaged_module(monkeypatch):
-    monkeypatch.syspath_prepend(str(ROOT / "tools"))
-    monkeypatch.delitem(sys.modules, "mdnotes", raising=False)
-    import mdnotes
-    assert mdnotes is md_notes and callable(mdnotes.render) and callable(mdnotes.parse_note_file)
-    assert (ROOT / "md_notes.py").exists()

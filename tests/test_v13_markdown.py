@@ -1,4 +1,5 @@
-"""tools/export_md.py + tools/import_md.py (Markdown round trip)."""
+"""`hermind export --format markdown` + tools/import_md.py (Markdown round trip)."""
+import contextlib
 import importlib.util
 import io
 import sys
@@ -21,7 +22,8 @@ def _load(name):
 
 @pytest.fixture(scope="module")
 def tools(pkg):
-    return _load("export_md"), _load("import_md"), sys.modules["mdnotes"]
+    import md_notes
+    return None, _load("import_md"), md_notes
 
 
 def _seed(s):
@@ -51,9 +53,10 @@ def env(tmp_path, store_mod, tools):
 
 
 def _export(tools, db, out, *flags):
-    exp = tools[0]
+    import hermind_cli
     buf = io.StringIO()
-    code = exp.run(exp.build_parser().parse_args(["--db", str(db), "--out", str(out), *flags]), out=buf)
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        code = hermind_cli.main(["export", "--db", str(db), "--format", "markdown", "--out", str(out), *flags])
     return code, buf.getvalue()
 
 
@@ -125,7 +128,7 @@ def test_export_by_kind_layout_front_matter_and_indexes(tools, env):
 
 def test_export_include_hidden_marks_status(tools, env):
     db, out, ids = env
-    _export(tools, db, out, "--include-hidden")
+    _export(tools, db, out, "--include-history")
     meta, _ = tools[2].parse_note_file(_file(out, ids["old"]).read_text(encoding="utf-8"))
     assert meta["status"] == "superseded" and meta["outdated_by"] == ids["new"]
 
@@ -142,7 +145,7 @@ def test_export_refuses_non_empty_dir_and_force_is_idempotent(tools, env):
     db, out, ids = env
     _export(tools, db, out)
     snap = {p: p.read_text(encoding="utf-8") for p in out.rglob("*.md")}
-    assert _export(tools, db, out)[0] == 2
+    assert _export(tools, db, out)[0] != 0          # a non-empty folder is refused
     assert _export(tools, db, out, "--force")[0] == 0
     assert {p: p.read_text(encoding="utf-8") for p in out.rglob("*.md")} == snap
 
@@ -298,7 +301,7 @@ def test_untouched_old_export_does_not_overwrite_newer_database(tools, env, stor
 
 def test_skips_and_refusals(tools, env, store_mod):
     db, out, ids = env
-    _export(tools, db, out, "--include-hidden")
+    _export(tools, db, out, "--include-history")
     (out / "secret.md").write_text("連線用的 token 是 ghp_" + "a1B2c3D4" * 5 + "\n", encoding="utf-8")
     dup = _file(out, ids["b"])
     (out / "dup.md").write_text(dup.read_text(encoding="utf-8"), encoding="utf-8")

@@ -1,4 +1,4 @@
-"""Shared helpers for tools/export_md.py, tools/import_md.py and `hermind import`: the one-file-per-note Markdown format.
+"""Shared helpers for the Markdown export, tools/import_md.py and `hermind import`: the one-file-per-note Markdown format.
 
 A note file is YAML front matter (a small subset written and read here, no PyYAML needed) followed by the note text:
 
@@ -228,7 +228,7 @@ _INDEX_COUNT = re.compile(r"^\d+ notes?$")
 
 
 def is_export_index(text: str) -> bool:
-    """True when *text* is an index.md that tools/export_md.py wrote: a ``# heading``, a ``N notes`` line (or, for the
+    """True when *text* is an index.md that the Markdown export wrote: a ``# heading``, a ``N notes`` line (or, for the
     top index, ``N notes from DB, layout: by KIND``), and then only ``- [#id](file.md) ...`` / ``- [dir](dir/index.md)
     ...`` lines. Anything else, even a file called index.md that looks a little like it, is an ordinary note."""
     lines = [ln.rstrip() for ln in (text or "").lstrip("\ufeff").replace("\r\n", "\n").split("\n")]
@@ -256,7 +256,7 @@ class Walk:
         self.notes: list[Path] = []
         self.other: dict[str, int] = {}
         self.hidden: dict[str, int] = {}
-        self.indexes = 0                     # index.md files that tools/export_md.py wrote (passed by)
+        self.indexes = 0                     # index.md files that the Markdown export wrote (passed by)
 
     def remark(self) -> str | None:
         """One sentence that accounts for everything that is not a note, or None when there is nothing to say."""

@@ -2,7 +2,7 @@
 
 **Please open an issue, not a pull request.** Hermind reads and stores a person's notes for years, so code changes are
 written only by the maintainer (with an AI assistant) and reviewed line by line. Pull requests from other people are not accepted
-(the repository allows them only from collaborators, and any that get through are closed with thanks); this is about
+(the repository allows them only from collaborators); this is about
 safety, not about your idea.
 
 What helps most:

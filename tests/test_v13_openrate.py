@@ -260,8 +260,3 @@ def test_usage_report_includes_open_rate(store, tmp_path):
     rep = store.usage_report(30)["open_rate"]
     assert rep["tracked"] == 1 and rep["shown_total"] >= 1
     assert all(0.9 <= x["factor"] <= 1.1 for x in rep["boosted"] + rep["demoted"])
-    store.conn.commit()
-    tool = Path(__file__).resolve().parent.parent / "tools" / "usage_report.py"
-    out = subprocess.run([sys.executable, "-I", str(tool), store.db_path], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    assert "open-rate prior" in out.stdout

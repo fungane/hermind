@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bring edits made to exported Markdown notes (tools/export_md.py) back into the database.
+"""Bring edits made to exported Markdown notes (`hermind export --format markdown`) back into the database.
 
     python tools/import_md.py --db ~/.hermes/hermind.db DIR            # dry run (default): only reports
     python tools/import_md.py --db ... DIR --apply [--stamp-ids] [--force]
@@ -21,7 +21,7 @@
 * Conflicts: each exported file carries a `rev` fingerprint. If a file was edited AND the note changed in the database
   since the export, the file is skipped and reported; --force lets the file win.
 * The files of the folder are chosen by the same function as `hermind import`: .md, .markdown, .mdx and .txt files, except an
-  index.md that tools/export_md.py wrote and anything in a hidden folder. A new file gets the same text as with `hermind import`
+  index.md that the Markdown export wrote and anything in a hidden folder. A new file gets the same text as with `hermind import`
   (its title / name / file name and description in front of a body that lacks them; --ignore-file-names turns file names off),
   and files that are not UTF-8 need --encoding NAME (UTF-8 and UTF-16/32 with a byte-order mark are always read).
 * Hidden (merged / superseded / rejected) notes, exporter-written `index.md`, secrets and unreadable files are skipped and
@@ -38,7 +38,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
-import mdnotes  # noqa: E402  (a name for md_notes.py in the repository root)
+import md_notes as mdnotes  # noqa: E402  (md_notes.py in the repository root)
 import import_core  # noqa: E402
 from import_readers import md_entry  # noqa: E402
 from store import DecisionStore, RefusedWrite  # noqa: E402
@@ -232,7 +232,7 @@ def run(args, out=None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--db", default=_default_db())
-    p.add_argument("dir", help="folder written by export_md.py (or any folder of .md files)")
+    p.add_argument("dir", help="folder written by `hermind export --format markdown` (or any folder of .md files)")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="only report (the default)")
     mode.add_argument("--apply", action="store_true", help="write the changes")

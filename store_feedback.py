@@ -71,7 +71,7 @@ class FeedbackMixin:
         return base
 
     def open_rate_report(self, top: int = 5, now: float | None = None) -> dict:
-        """Totals and the most boosted / most demoted notes, for tools/usage_report.py."""
+        """Totals and the most boosted / most demoted notes, for usage_report()."""
         now = _now() if now is None else now
         with self._lock:
             rows = self.conn.execute("SELECT id, content, kind, shown_count, opened_count, fb_at FROM notes "

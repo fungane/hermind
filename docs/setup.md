@@ -393,8 +393,7 @@ hermes config set plugins.hermind.vectors.profile balanced
 ```
 
 For the MCP server, pass a config file: `hermind-mcp --config vectors.json` with
-`{"vectors": {"enabled": true, "profile": "balanced"}}` in it. From a checkout, `tools/setup_vectors.sh balanced` and
-`tools/embed_all.py` do the same as the two commands.
+`{"vectors": {"enabled": true, "profile": "balanced"}}` in it.
 
 `setup-vectors` needs the network once (PyPI for the worker's packages, Hugging Face for the model); every model is
 pinned to a revision and a checksum. `--dry-run` shows what would be downloaded and where. Everything goes into one
@@ -421,7 +420,7 @@ If the worker runs against an encrypted database, install `sqlcipher3` in its ve
 ## Optional LLM tools
 
 Offline scripts in `tools/` (from a checkout or the installed plugin folder). None runs by itself, nothing in the plugin
-calls them and Hermind installs no cron job. The LLM ones send note text to the endpoint you name and cost tokens; they take
+calls them and Hermind installs no cron job. They send note text to the endpoint you name and cost tokens; they take
 `--base-url`, `--model` and `--api-key-env` (the variable's name, never the key). For DeepSeek, add
 `--extra-body '{"thinking": {"type": "disabled"}}'` or most batches time out. Back the database up first.
 
@@ -430,9 +429,6 @@ calls them and Hermind installs no cron job. The LLM ones send note text to the 
 | `tools/backfill_aliases.py --db DB` | yes | Writes alternative phrasings for old notes (one call per batch of notes; the model never sees questions). `--dry-run`, `--kinds`, `--limit`, `--since YYYY-MM-DD\|last`, `--rebuild`. Never on the search path |
 | `tools/build_summaries.py --db DB` | yes | Per-entity consolidated summaries. `--stale-only` for incremental runs, `--entities`, `--dry-run`, `--price-in/--price-out` for a cost estimate |
 | `tools/sleep_consolidate.py --db DB` | yes | Nightly review of the last day's notes (below) |
-| `tools/usage_report.py DB [--days N]` | no | How recall is doing in real use, including the effect of the open-rate prior |
-| `tools/recall_eval.py ROOT DB_COPY --set YOUR_SET.json [--show] [-k K] [--no-vectors]` | no | Recall quality of the automatic recall path on a database copy: hit, recall and precision at 4 on your hand-labelled prompts, and how often topicless prompts recall nothing. Format: `tools/recall_eval_set.example.json`. Labels refer to your own note ids; keep the set out of the repository |
-| `tools/mine_eval.py DB [--out FILE]` | no | Turns your recall history (`recall_shown`, the 200-character queries kept in `usage_log` for 90 days) into an eval set and shows how often the opened note was ranked first. Read-only; the output file is mode 600 and refused inside a git checkout |
 
 ### Sleep-time consolidation
 

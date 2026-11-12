@@ -12,7 +12,7 @@ Telemetry: Hugging Face's is switched off for the download, and onnxruntime's (o
 switched off for the worker (vec.py and embed_server.py set ORT_DISABLE_TELEMETRY=1).
 
 Standard library only; lives in the package so both commands work from a pip or uvx install, not only from a checkout.
-Also runnable as a script (`python3 vec_setup.py PROFILE [--home DIR] [--dry-run]`), which tools/setup_vectors.sh uses.
+Also runnable as a script (`python3 vec_setup.py PROFILE [--home DIR] [--dry-run]`).
 """
 from __future__ import annotations
 

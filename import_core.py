@@ -45,7 +45,7 @@ except ImportError:  # loaded as a top-level module (hermind_cli.py from a check
 OUTCOMES = ("new", "version", "duplicate", "edited", "history", "refused", "unreadable", "empty", "excluded")   # the fixed order of every count
 CHUNK = 300                       # notes per commit while applying: other writers are never locked out for long
 DEFAULT_SCOPE = "default"         # what `hermind remember` uses (DecisionStore's default scope)
-HISTORY_STATUSES = ("superseded", "merged")      # how tools/export_md.py --include-hidden marks an older version
+HISTORY_STATUSES = ("superseded", "merged")      # how the Markdown export (--include-history) marks an older version
 VERSION_RELS = ("version_of", "superseded_by", "merged_into")   # the links from an older version to a newer note
 EDIT_SYNC_HINT = "tools/import_md.py syncs edits of an exported folder"
 

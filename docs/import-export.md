@@ -320,8 +320,8 @@ or `--by entity` (`DIR/<scope>/<entity>/...`), `--scope NAME`, and `--include-hi
 with front matter (`id`, `kind`, `status`, `tags`, `trust`, `created`, `valid_from`, `valid_to`, `supersedes`, `outdated_by`,
 `pinned`, `scope`, `keywords`, `rev`) followed by the text; every folder gets an `index.md`. A folder that is not empty is
 refused unless you add `--force`, which overwrites files of the same name and deletes nothing. The folder reads back with
-`hermind import` (older versions come back as history, not live notes). To edit the files and bring the edits back, use
-`tools/export_md.py` (the same writer; its history option is called `--include-hidden`) and `tools/import_md.py` (a dry run
+`hermind import` (older versions come back as history, not live notes). To edit the files and bring the edits back into the notes, use
+`tools/import_md.py` from a checkout (a dry run
 unless `--apply`; text changes go through versioned updates, notes without an id become new notes, conflicts are reported).
 
 ### What each format carries

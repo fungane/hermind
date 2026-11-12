@@ -1,7 +1,6 @@
 """Write the notes of a database as a folder of Markdown files (one per note, YAML front matter) with index files.
 
-This is the writing half of `tools/export_md.py`, moved into the repository root so that `hermind export --format
-markdown` ships in the wheel; the script is now a thin wrapper around it. Read-only on the database. The files can be
+Used by `hermind export --format markdown`. Read-only on the database. The files can be
 read and edited in any editor; edits come back with `tools/import_md.py`, and the whole folder imports with
 `hermind import`.
 

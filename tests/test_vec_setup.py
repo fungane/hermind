@@ -163,7 +163,7 @@ def test_the_commands_answer_in_one_line(tmp_path):
     d = json.loads(r.stdout)
     assert r.returncode == 0 and d["dry_run"] and d["config"]["vectors"]["profile"] == "light"
     assert not (tmp_path / "v").exists()                       # a dry run changes nothing
-    r = cli("light", "--dry-run", "--home", str(tmp_path / "v"), script="vec_setup.py")   # what tools/setup_vectors.sh runs
+    r = cli("light", "--dry-run", "--home", str(tmp_path / "v"), script="vec_setup.py")   # vec_setup.py run as a script
     assert r.returncode == 0 and r.stdout.startswith("would set up: profile light") and not (tmp_path / "v").exists()
     r = cli("embed-all", "--db", str(tmp_path / "missing.db"))
     assert r.returncode == 2 and r.stdout.startswith("ERROR: no database") and "Traceback" not in r.stderr
@@ -173,7 +173,7 @@ def test_the_commands_answer_in_one_line(tmp_path):
 
 
 def test_helper_scripts_answer_help_without_touching_anything(tmp_path):
-    for script in ("embed_all.py", "export_hindsight.py"):
+    for script in ("export_hindsight.py",):
         r = subprocess.run([sys.executable, str(ROOT / "tools" / script), "--help"], capture_output=True, text=True,
                            cwd=tmp_path)
         assert r.returncode == 0 and "usage" in r.stdout and not list(tmp_path.iterdir()), (script, r.stdout, r.stderr)

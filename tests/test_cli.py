@@ -412,11 +412,6 @@ def test_restricted_key_against_a_real_sshd(home, tmp_path):
             os.kill(int(pid), 15)
 
 
-def test_recall_eval_example_set_has_the_expected_shape():
-    d = json.loads((ROOT / "tools" / "recall_eval_set.example.json").read_text())
-    assert d["topical"] and all(isinstance(q, str) and isinstance(ids, list) for q, ids in d["topical"]) and d["negative"]
-    assert not (ROOT / "tools" / "recall_eval_set.json").exists()
-
 
 def test_doctor_explains_a_higher_numbered_pre_public_build(home):
     p = home / ".hermes" / "plugins" / "hermind"
