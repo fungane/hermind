@@ -640,6 +640,19 @@ def launch_command(source: str) -> tuple[str, list[str]]:
     return "uvx", ["--from", git_url(), "hermind-mcp"]
 
 
+def shell_quote(value: str, windows: bool | None = None) -> str:
+    """*value* quoted for the shell that will run the line. POSIX: shlex.quote (what it always was). Windows: double quotes
+    around anything that is not plain, which cmd.exe, PowerShell and Git Bash all read the same way for a path; cmd.exe has
+    no single quotes, and bash takes a bare backslash for an escape."""
+    if not (os.name == "nt" if windows is None else windows):
+        import shlex
+        return shlex.quote(value)
+    quoted = subprocess.list2cmdline([value])
+    if quoted == value and not re.fullmatch(r"[\w@+=:,./-]+", value):
+        quoted = '"' + re.sub(r"(\\+)$", r"\1\1", value) + '"'
+    return quoted
+
+
 def _rq(path: str) -> str:
     """Quote a path for the REMOTE shell; a leading ~/ becomes "$HOME/..." so it expands over there, not here."""
     import shlex
@@ -675,10 +688,9 @@ def config_snippet(client: str, source: str, env: dict, launch: tuple[str, list[
     if client in MCPSERVERS_JSON:
         return {"where": MCPSERVERS_JSON[client], "format": "json", "snippet": j({"mcpServers": {"hermind": server}})}
     if client == "claude-code":
-        import shlex                          # every value that lands in a shell command line is quoted for the shell
-        envs = "".join(f" -e {shlex.quote(f'{k}={v}')}" for k, v in env.items())
+        envs = "".join(f" -e {shell_quote(f'{k}={v}')}" for k, v in env.items())     # every value that lands in a shell line is quoted for the shell
         return {"where": "run in a shell", "format": "shell",
-                "snippet": f"claude mcp add hermind{envs} -- {' '.join(shlex.quote(x) for x in [cmd, *args])}"}
+                "snippet": f"claude mcp add hermind{envs} -- {' '.join(shell_quote(x) for x in [cmd, *args])}"}
     if client == "vscode":
         return {"where": ".vscode/mcp.json or the user profile mcp.json", "format": "json",
                 "snippet": j({"servers": {"hermind": {"type": "stdio", **server}}})}
@@ -1052,8 +1064,7 @@ def default_source() -> str:
     return "pipx" if shutil.which("hermind-hook", path=_path_without_own_bin()) else "git"
 
 
-def hook_command(ns, db: str | None) -> str:
-    import shlex
+def hook_command(ns, db: str | None, windows: bool | None = None) -> str:
     if ns.source == "pipx":
         parts = ["hermind-hook"]
     elif ns.source == "git":
@@ -1062,7 +1073,7 @@ def hook_command(ns, db: str | None) -> str:
         parts = [sys.executable, str(ROOT / "hermind_hook.py")]
     if db:
         parts += ["--db", db]
-    return " ".join(shlex.quote(p) for p in parts)
+    return " ".join(shell_quote(p, windows) for p in parts)
 
 
 def install_hook(ns) -> dict:

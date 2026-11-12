@@ -91,7 +91,8 @@ def _fetch(tmp_path, files, rev="abc"):
     out.mkdir(exist_ok=True)
     cache.mkdir(exist_ok=True)
     r = subprocess.run([sys.executable, "-c", vec_setup._FETCH, str(out), "some/repo", rev, json.dumps(files), str(cache)],
-                       capture_output=True, text=True, env={"PYTHONPATH": str(fake.parent)})
+                       capture_output=True, text=True, env={"PYTHONPATH": str(fake.parent),
+                                                                                   **{k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ}})   # Windows Python cannot start without it
     return r, out, cache
 
 
@@ -153,7 +154,7 @@ def test_the_next_steps_name_a_folder_that_is_not_the_default(tmp_path, monkeypa
     d = {"ok": True, "dry_run": True, **vec_setup.plan("light", "rel/vh")}
     assert d["home"] == str(tmp_path / "rel" / "vh")                     # made absolute
     text = vec_setup.describe(d)
-    assert f"--home {tmp_path / 'rel' / 'vh'}" in text and f'"home": "{tmp_path / "rel" / "vh"}"' in text
+    assert f"--home {tmp_path / 'rel' / 'vh'}" in text and f'"home": {json.dumps(str(tmp_path / "rel" / "vh"))}' in text   # JSON text doubles a Windows path's backslashes
     assert "--home" not in vec_setup.describe({"ok": True, **vec_setup.plan("light")})
 
 

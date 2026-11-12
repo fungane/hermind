@@ -622,12 +622,13 @@ def test_vector_signal_finds_note_without_shared_words_and_degrades_gracefully(p
         for t in ("The user is a screenwriter", "Rent is due on the first of the month", "Gym is on Monday mornings"):
             p.handle_tool_call("memory_remember", {"content": t, "kind": "preference", "keywords": "x"})
         p._pool.shutdown(wait=True); p._pool = None                      # background indexing finished
-        assert p._store.conn.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 3
-        res = _json.loads(p.handle_tool_call("memory_search", {"query": "what is my profession", "limit": 3}))["results"]
-        assert "screenwriter" in res[0]["text"] if "text" in res[0] else "screenwriter" in _json.dumps(res[0])   # no shared word
-        # kind filter is honoured for vector-only hits
-        none = _json.loads(p.handle_tool_call("memory_search", {"query": "what is my profession", "kind": "tech"}))
-        assert none["count"] == 0
+        if _sys.platform != "win32":      # semantic search is POSIX-only: the worker is read with select() on a pipe, which Windows allows only for sockets
+            assert p._store.conn.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 3
+            res = _json.loads(p.handle_tool_call("memory_search", {"query": "what is my profession", "limit": 3}))["results"]
+            assert "screenwriter" in res[0]["text"] if "text" in res[0] else "screenwriter" in _json.dumps(res[0])   # no shared word
+            # kind filter is honoured for vector-only hits
+            none = _json.loads(p.handle_tool_call("memory_search", {"query": "what is my profession", "kind": "tech"}))
+            assert none["count"] == 0
         # worker dies / is missing -> plain lexical results, no exception
         p._vec.python = "/nonexistent/python"
         ok = _json.loads(p.handle_tool_call("memory_search", {"query": "gym monday"}))
@@ -642,10 +643,10 @@ def test_vector_profiles_pick_model_files_names_and_prefixes(tmp_path):
     from vec import VectorIndex
     d = VectorIndex({"home": str(tmp_path)}, "x.db")                       # unchanged default: e5, with prefixes
     assert (d.model_name, d.query_prefix, d.passage_prefix) == ("e5", "query: ", "passage: ")
-    assert d.model.endswith("model/model_quantized.onnx")
+    assert d.model.endswith(os.path.join("model", "model_quantized.onnx"))
     l = VectorIndex({"home": str(tmp_path), "profile": "Light"}, "x.db")
     assert (l.model_name, l.query_prefix, l.passage_prefix) == ("bekko-static-256", "", "")
-    assert l.model.endswith("model-light/model.onnx") and l.tokenizer.endswith("model-light/tokenizer.json")
+    assert l.model.endswith(os.path.join("model-light", "model.onnx")) and l.tokenizer.endswith(os.path.join("model-light", "tokenizer.json"))
     o = VectorIndex({"home": str(tmp_path), "profile": "light", "query_prefix": "q: ", "model_name": "mine"}, "x.db")
     assert (o.model_name, o.query_prefix, o.passage_prefix) == ("mine", "q: ", "")      # explicit settings win
     assert VectorIndex({"profile": "nonsense"}, "x.db").model_name == "e5"  # unknown name falls back to default
@@ -653,7 +654,7 @@ def test_vector_profiles_pick_model_files_names_and_prefixes(tmp_path):
     q = VectorIndex({"home": str(tmp_path), "profile": "quality"}, "x.db")
     assert (b.model_name, b.pooling, b.query_prefix) == ("hs-embed-1", "mean", "")
     assert (q.model_name, q.pooling, q.query_prefix) == ("bge-m3", "cls", "")      # bge-m3 pools with the first token
-    assert d.pooling == "mean" and b.model.endswith("model-balanced/model.onnx") and q.model.endswith("model-quality/model.onnx")
+    assert d.pooling == "mean" and b.model.endswith(os.path.join("model-balanced", "model.onnx")) and q.model.endswith(os.path.join("model-quality", "model.onnx"))
     assert VectorIndex({"home": str(tmp_path), "profile": "quality", "pooling": "mean"}, "x.db").pooling == "mean"
     assert q.sec_per_note > d.sec_per_note > l.sec_per_note        # heavy models get a longer wait per batch (bge-m3 timed out at 0.15)
     assert VectorIndex({"sec_per_note": 2}, "x.db").sec_per_note == 2.0

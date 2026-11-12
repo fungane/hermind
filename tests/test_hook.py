@@ -139,7 +139,8 @@ def test_install_hook_write_merges_backs_up_and_is_idempotent(db, tmp_path):
     assert s["hooks"]["UserPromptSubmit"][0] == OTHER["hooks"]["UserPromptSubmit"][0]   # other tools' hooks untouched
     backups = sorted(p.parent.glob("settings.json.bak-hermind-*"))
     assert len(backups) == 2 and json.loads(backups[0].read_text()) == OTHER      # the first backup is the original
-    assert all((b.stat().st_mode & 0o777) == 0o600 for b in backups)
+    if sys.platform != "win32":                                                   # Windows has no Unix permission bits (a new file reports 0o666)
+        assert all((b.stat().st_mode & 0o777) == 0o600 for b in backups)
 
 
 def test_install_hook_remove_leaves_everything_else(db, tmp_path):

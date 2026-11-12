@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Windows: the hook command from `install-hook` and the `claude mcp add` line from `config claude-code` are quoted for Windows shells (no change on Linux and macOS); the tests that assumed POSIX paths now compare native ones, what cannot apply on Windows is skipped there, and three known Windows defects are listed in docs/limitations.md.
+
 ## 1.0.0
 
 First public release. Long-term memory for AI agents in one SQLite file, standard library only, for the Hermes agent

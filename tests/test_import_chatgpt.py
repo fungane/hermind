@@ -1,6 +1,7 @@
 """The `chatgpt-export` reader of `hermind import` (synthetic exports: the real format is not published)."""
 
 import json
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -467,6 +468,7 @@ def test_zip_member_names_are_normalised_before_the_unsafe_check(tmp_path):
         zf.writestr("./conversations-005.json", json.dumps(_convs()))          # a plain ./ name is still fine
     with rx.ExportSource(z) as src:
         assert src.names == ["conversations-005.json", "conversations.json"]
-        assert sorted(n for n, _ in src.refused) == sorted([".//etc/conversations-001.json", "././/etc/conversations-002.json",
-                                                             "./../conversations-003.json", ".\\..\\conversations-004.json"])
+        # zipfile itself turns the platform's separator into "/" in a member name, so on Windows "\\" is already "/" when read
+        assert sorted(n for n, _ in src.refused) == sorted(n.replace(os.sep, "/") for n in [
+            ".//etc/conversations-001.json", "././/etc/conversations-002.json", "./../conversations-003.json", ".\\..\\conversations-004.json"])
         assert all("unsafe name" in why for _, why in src.refused)

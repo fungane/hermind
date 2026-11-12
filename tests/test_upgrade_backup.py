@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,9 @@ def test_upgrade_makes_an_owner_only_backup_first_and_keeps_the_data(tmp_path):
     assert s.conn.execute("PRAGMA user_version").fetchone()[0] >= 5
     assert s.get(nid)["content"].startswith("Atlas")
     baks = list(tmp_path.glob("m.db.bak-v4-*"))
-    assert len(baks) == 1 and stat.S_IMODE(baks[0].stat().st_mode) == 0o600
+    assert len(baks) == 1
+    if sys.platform != "win32":                                           # Windows has no Unix permission bits (a new file reports 0o666)
+        assert stat.S_IMODE(baks[0].stat().st_mode) == 0o600
     old = sqlite3.connect(str(baks[0]))
     assert old.execute("PRAGMA user_version").fetchone()[0] == 4          # the copy is the pre-upgrade state
     assert old.execute("SELECT count(*) FROM notes").fetchone()[0] == 1

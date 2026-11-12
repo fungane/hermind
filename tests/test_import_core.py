@@ -354,7 +354,9 @@ def test_apply_backs_up_first_and_prints_the_path(tmp_path, capsys):
     src = source(tmp_path, nine())
     res = import_core.run_import(src, db, apply=True)
     bak = Path(res["backup"])
-    assert bak.exists() and bak.name.startswith("m.db.bak-import-") and (bak.stat().st_mode & 0o777) == 0o600
+    assert bak.exists() and bak.name.startswith("m.db.bak-import-")
+    if sys.platform != "win32":                                                   # Windows has no Unix permission bits (a new file reports 0o666)
+        assert (bak.stat().st_mode & 0o777) == 0o600
     assert str(bak) in hermind_cli.import_text(res)
     old = sqlite3.connect(bak)
     assert old.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 1          # the state before the first write

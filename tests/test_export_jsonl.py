@@ -144,7 +144,9 @@ def test_exporting_twice_gives_byte_identical_files(tmp_path, db):
 def test_out_and_force_work_as_for_json(tmp_path, db):
     out = tmp_path / "e.jsonl"
     r = cli(tmp_path, "export", "--db", str(db), "--format", "jsonl", "--out", str(out))
-    assert r.returncode == 0 and "9 notes and 1 relations to" in r.stdout and oct(out.stat().st_mode & 0o777) == "0o600"
+    assert r.returncode == 0 and "9 notes and 1 relations to" in r.stdout
+    if sys.platform != "win32":                              # Windows has no Unix permission bits (a new file reports 0o666)
+        assert oct(out.stat().st_mode & 0o777) == "0o600"
     r = cli(tmp_path, "export", "--db", str(db), "--format", "jsonl", "--out", str(out))
     assert r.returncode == 2 and "--force" in r.stdout + r.stderr
     assert cli(tmp_path, "export", "--db", str(db), "--format", "jsonl", "--out", str(out), "--force").returncode == 0

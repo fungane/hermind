@@ -131,6 +131,7 @@ def test_encrypted_upgrade_backup_stays_encrypted(tmp_path):
 
 # -- check 3: owner-only; a copy that fails partway leaves nothing and stops before any write -------------------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix permission bits: a file there reports mode 0o666 (a folder 0o777) whatever the code asks for")
 def test_copy_is_owner_only(tmp_path):
     db = tmp_path / "m.db"
     DecisionStore(str(db)).close()

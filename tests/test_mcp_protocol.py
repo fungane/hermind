@@ -184,6 +184,7 @@ def test_stdout_has_only_protocol_messages_and_logs_hide_note_text(mcp_spawn):
 
 def test_stray_print_cannot_corrupt_stdout(tmp_path):
     """Anything that prints while the server runs (a library, a debug line) lands on stderr."""
+    import os
     import subprocess
     import sys
     from pathlib import Path
@@ -201,7 +202,8 @@ def test_stray_print_cannot_corrupt_stdout(tmp_path):
         "hm.HermindMCP.handle_message = noisy\n"
         "sys.exit(hm.main(['--db', sys.argv[0] + '.db']))\n")
     p = subprocess.run([sys.executable, "-I", "-c", code], input='{"jsonrpc":"2.0","id":1,"method":"ping"}\n',
-                       capture_output=True, text=True, cwd=str(tmp_path), env={"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)})
+                       capture_output=True, text=True, cwd=str(tmp_path), env={"HOME": str(tmp_path), "USERPROFILE": str(tmp_path),
+                                                                 **{k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ}})   # Windows Python cannot start without it
     assert p.stdout.strip() == '{"jsonrpc":"2.0","id":1,"result":{}}'
     assert "STRAY DEBUG LINE" in p.stderr
 

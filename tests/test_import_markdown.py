@@ -348,7 +348,9 @@ def test_cli_end_to_end_in_a_subprocess(tmp_path):
     export(a_db, out)
     b_db = tmp_path / "b.db"
     run = lambda *args: subprocess.run([sys.executable, str(ROOT / "hermind_cli.py"), "import", *args], capture_output=True,
-                                       text=True, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}, timeout=120)
+                                       text=True, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+                                            **{k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ}},   # Windows Python cannot start without it
+                                       timeout=120)
     r = run(str(out), "--db", str(b_db))
     assert r.returncode == 0 and "PREVIEW" in r.stdout and "3 new" in r.stdout and not b_db.exists()
     r = run(str(out), "--db", str(b_db), "--apply", "--json")

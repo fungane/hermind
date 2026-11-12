@@ -16,6 +16,16 @@ ROOT = REPO / "hermind"
 CLI = str(ROOT / "hermind_cli.py")
 
 
+def _native(path):
+    """A path as the CLI prints it: Path() turns "/" into the platform's separator (nothing changes on Linux and macOS)."""
+    return str(Path(path))
+
+
+def _in_json(text):
+    """How a string reads inside JSON (or JSON-quoted YAML/TOML) text: a Windows path has its backslashes doubled there."""
+    return json.dumps(text, ensure_ascii=False)[1:-1]
+
+
 def run(*args, home, extra_env=None, check=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMIND_", "HERMES_"))}
     env.update(HOME=str(home), USERPROFILE=str(home), **(extra_env or {}))
@@ -127,7 +137,7 @@ def test_install_real_then_rollback(home):
 def test_install_profile_flag_targets_only_that_profile(home):
     (home / ".hermes" / "profiles" / "friend").mkdir(parents=True)
     d = json.loads(run("install-hermes", "--profile", "friend", "--json", home=home, check=0).stdout)
-    assert d["ok"] and d["hermes_home"].endswith("profiles/friend")
+    assert d["ok"] and d["hermes_home"].endswith(os.path.join("profiles", "friend"))
     assert (home / ".hermes" / "profiles" / "friend" / "plugins" / "hermind" / "store.py").exists()
     assert not (home / ".hermes" / "plugins").exists()
 
@@ -159,7 +169,8 @@ def test_config_json_snippets_parse_and_carry_env(client, home):
     d = json.loads(run("config", client, "--json", "--write", "--db", "/data/m.db", "--key-file", "/k/db.key", home=home, check=0).stdout)
     obj = json.loads(d["snippet"])
     text = json.dumps(obj)
-    assert "hermind-mcp" in text and "HERMIND_MCP_WRITE" in text and "/data/m.db" in text and "/k/db.key" in text
+    assert ("hermind-mcp" in text and "HERMIND_MCP_WRITE" in text
+            and _in_json(_native("/data/m.db")) in text and _in_json(_native("/k/db.key")) in text)
     assert d["tested"] is False
 
 
@@ -173,7 +184,7 @@ def test_config_toml_yaml_and_shell(home):
     d = json.loads(run("config", "continue", "--json", home=home, check=0).stdout)
     assert "mcpServers:" in d["snippet"] and "hermind-mcp" in d["snippet"]
     d = json.loads(run("config", "dsh", "--json", "--source", "checkout", home=home, check=0).stdout)
-    assert str(ROOT / "hermind_mcp.py") in d["snippet"] and "checkout" in d["note"]
+    assert _in_json(str(ROOT / "hermind_mcp.py")) in d["snippet"] and "checkout" in d["note"]
 
 
 def test_config_checkout_source_runs_the_server(home, tmp_path):
@@ -217,7 +228,7 @@ def test_config_groups_and_db_from_profile(home):
     g = d["groups_by_how_you_apply_the_config"]
     assert sorted(sum(g.values(), [])) == d["clients"]
     d = json.loads(run("config", "cursor", "--db-from-profile", "friend", "--json", home=home, check=0).stdout)
-    assert d["apply"] == "file" and "profiles/friend/hermind.db" in d["snippet"]
+    assert d["apply"] == "file" and _in_json(os.path.join("profiles", "friend", "hermind.db")) in d["snippet"]
     assert json.loads(run("config", "claude-code", "--json", home=home, check=0).stdout)["apply"] == "command"
 
 
@@ -291,6 +302,8 @@ def test_remote_config_runs_the_server_through_ssh(home, tmp_path):
     assert srv["args"][:4] == ["-T", "-o", "BatchMode=yes", "-o"] and ["-p", "2222"] == srv["args"][srv["args"].index("-p"):][:2]
     assert srv["args"][-2] == "me@box" and 'HERMIND_DB="$HOME/.hermes/profiles/friend/hermind.db"' in srv["args"][-1]
     assert "over ssh" in d["note"]
+    if sys.platform == "win32":      # the stand-in ssh below is a /bin/sh script: Windows cannot run it by its shebang (it would find the real ssh.exe)
+        return
     fake = tmp_path / "bin"
     fake.mkdir()
     (fake / "ssh").write_text(FAKE_SSH)
@@ -324,6 +337,9 @@ def _keyline(home, *args):
     return r, json.loads(r.stdout)
 
 
+@pytest.mark.xfail(sys.platform == "win32", strict=True, reason=(
+    "Windows: authorize-key writes a POSIX command line (python3, single quotes around the backslash paths), which a "
+    "Windows OpenSSH server (cmd.exe) can neither parse nor run"))
 def test_authorize_key_line_and_errors(home, tmp_path):
     _seed_db(home / ".hermes" / "decision_memory.db")
     pub = tmp_path / "k.pub"
@@ -365,7 +381,7 @@ def test_authorize_key_generate_never_overwrites(home, tmp_path):
 def test_config_restricted_sends_no_command(home):
     d = json.loads(run("config", "cursor", "--remote", "me@box", "--restricted", "--ssh-key", "/k/restricted", "--json", home=home, check=0).stdout)
     args = json.loads(d["snippet"])["mcpServers"]["hermind"]["args"]
-    assert args[-1] == "me@box" and args[args.index("-i") + 1] == "/k/restricted" and "forced command" in d["note"]
+    assert args[-1] == "me@box" and args[args.index("-i") + 1] == _native("/k/restricted") and "forced command" in d["note"]
     assert run("config", "cursor", "--remote", "me@box", "--restricted", "--ssh-key", "/k/r", "--write", "--json", home=home).returncode == 2
     assert run("config", "cursor", "--restricted", "--ssh-key", "/k/r", "--json", home=home).returncode == 2
 
@@ -487,9 +503,10 @@ def test_doctor_share_has_no_home_path_user_or_profile_name(home):
     r = run("doctor", "--share", home=home, check=0)
     d = json.loads(r.stdout)
     assert str(home) not in r.stdout and "alice-secret-profile" not in r.stdout
+    assert _in_json(str(home)) not in r.stdout              # JSON doubles a Windows path's backslashes: look for that spelling too
     assert "/bin/" not in json.dumps(d.get("python")) and all(isinstance(v, bool) for v in d["commands"].values())
     assert d["hermind"]["version"] and "shared_safely" in d
-    assert str(home) in raw   # the plain report does carry the path, which is why --share exists
+    assert _in_json(str(home)) in raw   # the plain report does carry the path, which is why --share exists
 
 
 def test_hook_source_follows_how_hermind_is_installed(monkeypatch, tmp_path):
@@ -501,18 +518,19 @@ def test_hook_source_follows_how_hermind_is_installed(monkeypatch, tmp_path):
     spec.loader.exec_module(m)
     assert m.default_source() == "checkout"
     monkeypatch.setattr(m, "ROOT", tmp_path)                                         # not a checkout
-    own = tmp_path / "uvx-env" / "bin"
+    exe = "hermind-hook.exe" if os.name == "nt" else "hermind-hook"                   # a Windows command needs an extension
+    own = tmp_path / "uvx-env" / ("Scripts" if os.name == "nt" else "bin")           # where an environment keeps its commands
     own.mkdir(parents=True)
-    (own / "hermind-hook").write_text("#!/bin/sh\n")
-    (own / "hermind-hook").chmod(0o755)
+    (own / exe).write_text("#!/bin/sh\n")
+    (own / exe).chmod(0o755)
     monkeypatch.setattr(m.sys, "prefix", str(own.parent))
     monkeypatch.setenv("PATH", f"{own}{os.pathsep}/usr/bin{os.pathsep}/bin")
     if not shutil.which("hermind-hook", path=f"/usr/bin{os.pathsep}/bin"):
         assert m.default_source() == "git"                                           # only inside uvx's env
     elsewhere = tmp_path / "local-bin"
     elsewhere.mkdir()
-    (elsewhere / "hermind-hook").write_text("#!/bin/sh\n")
-    (elsewhere / "hermind-hook").chmod(0o755)
+    (elsewhere / exe).write_text("#!/bin/sh\n")
+    (elsewhere / exe).chmod(0o755)
     monkeypatch.setenv("PATH", f"{own}{os.pathsep}{elsewhere}")
     assert m.default_source() == "pipx"
     assert str(own) not in m._path_without_own_bin().split(os.pathsep)
@@ -596,6 +614,7 @@ def test_remembering_the_same_text_again_on_purpose_removes_an_earlier_expiry(ho
 
 WEIRD_DB = "/tmp/my dir/it's m\\k.db"
 WEIRD_KEY = '/tmp/key dir/"k" it\'s.key'
+NATIVE_DB, NATIVE_KEY = _native(WEIRD_DB), _native(WEIRD_KEY)       # what the CLI makes of them (the same strings on Linux and macOS)
 
 
 def _walk_find(obj, key):
@@ -631,26 +650,26 @@ def test_config_claude_code_shell_line_quotes_every_value(home, more):
     assert argv[sep + 1:] == [reference["command"], *reference["args"]]
     assert sorted(pairs) == sorted(f"{k}={v}" for k, v in reference.get("env", {}).items())
     if not more or more == ("--source", "checkout"):
-        assert f"HERMIND_DB={WEIRD_DB}" in pairs and f"HERMIND_DB_KEY_FILE={WEIRD_KEY}" in pairs
+        assert f"HERMIND_DB={NATIVE_DB}" in pairs and f"HERMIND_DB_KEY_FILE={NATIVE_KEY}" in pairs
 
 
 @pytest.mark.parametrize("client", JSON_CLIENTS)
 def test_config_json_snippets_keep_awkward_paths_intact(client, home):
     obj = json.loads(_config(home, client)["snippet"])
     env = _walk_find(obj, "env") or _walk_find(obj, "environment")
-    assert env["HERMIND_DB"] == WEIRD_DB and env["HERMIND_DB_KEY_FILE"] == WEIRD_KEY
+    assert env["HERMIND_DB"] == NATIVE_DB and env["HERMIND_DB_KEY_FILE"] == NATIVE_KEY
 
 
 def test_config_toml_and_yaml_snippets_keep_awkward_paths_intact(home):
     tomllib = pytest.importorskip("tomllib")
     t = tomllib.loads(_config(home, "codex", "--source", "checkout")["snippet"])["mcp_servers"]["hermind"]
-    assert t["env"]["HERMIND_DB"] == WEIRD_DB and t["env"]["HERMIND_DB_KEY_FILE"] == WEIRD_KEY
+    assert t["env"]["HERMIND_DB"] == NATIVE_DB and t["env"]["HERMIND_DB_KEY_FILE"] == NATIVE_KEY
     assert t["command"] == sys.executable and t["args"] == [str(ROOT / "hermind_mcp.py")]
     for client in ("continue", "dsh"):                     # YAML: every value is a JSON string, which YAML reads the same way
         lines = _config(home, client, "--source", "checkout")["snippet"].splitlines()
         values = {ln.split(":", 1)[0].strip(): ln.split(":", 1)[1].strip() for ln in lines if ":" in ln}
         assert json.loads(values["command"]) == sys.executable
-        assert json.loads(values["HERMIND_DB"]) == WEIRD_DB and json.loads(values["HERMIND_DB_KEY_FILE"]) == WEIRD_KEY
+        assert json.loads(values["HERMIND_DB"]) == NATIVE_DB and json.loads(values["HERMIND_DB_KEY_FILE"]) == NATIVE_KEY
 
 
 def test_install_hermes_outside_a_checkout_advises_the_pinned_clone(home, tmp_path, monkeypatch, capsys):
@@ -670,7 +689,7 @@ def test_config_restricted_ssh_uses_only_the_named_key(home):
     """-i alone still offers the agent's keys first: a normal authorised key would open a shell. IdentitiesOnly=yes stops that."""
     for client in ("cursor", "zed", "codex", "continue", "opencode"):
         d = json.loads(run("config", client, "--remote", "me@box", "--restricted", "--ssh-key", "/k/r", "--json", home=home).stdout)
-        assert "IdentitiesOnly=yes" in d["snippet"] and d["snippet"].index("IdentitiesOnly=yes") < d["snippet"].index("/k/r"), client
+        assert "IdentitiesOnly=yes" in d["snippet"] and d["snippet"].index("IdentitiesOnly=yes") < d["snippet"].index(_in_json(_native("/k/r"))), client
     d = json.loads(run("config", "cursor", "--remote", "me@box", "--ssh-key", "/k/r", "--json", home=home).stdout)   # unrestricted too
     assert "IdentitiesOnly=yes" in d["snippet"]
     d = json.loads(run("config", "cursor", "--remote", "me@box", "--json", home=home).stdout)
@@ -710,3 +729,38 @@ def test_remembering_again_with_an_explicit_never_expiring_kind_removes_an_earli
     before = _expiry_of(db3)
     run("remember", README_SENTENCE, "--kind", "chat", "--db", str(db3), home=home, check=0)
     assert _expiry_of(db3) == before and before[1] is not None
+
+
+def test_shell_quote_is_shlex_on_posix_and_double_quotes_on_windows():
+    """Windows 3.10/3.14 CI: the hook line was quoted with single quotes, which cmd.exe does not know, so Claude Code's hook never ran."""
+    import shlex
+    sys.path.insert(0, str(ROOT))
+    import hermind_cli
+    q = hermind_cli.shell_quote
+    values = ["plain", "hermind-hook", "git+https://github.com/fungane/hermind@v1.0.0", "a b", "it's", 'say "hi"', "", "$HOME/x",
+              WEIRD_DB, WEIRD_KEY, r"C:\Users\me\my notes\m.db"]
+    assert all(q(v, windows=False) == shlex.quote(v) for v in values)             # POSIX: exactly what it always was
+    assert q("hermind-hook", windows=True) == "hermind-hook" and q("git+https://github.com/fungane/hermind@v1.0.0", windows=True).isascii()
+    assert q(r"C:\Program Files\Python 3\python.exe", windows=True) == r'"C:\Program Files\Python 3\python.exe"'
+    assert q(r"C:\Python3\python.exe", windows=True) == r'"C:\Python3\python.exe"'      # a bare backslash path is an escape sequence in bash
+    assert q("C:\\dir\\", windows=True) == '"C:\\dir\\\\"' and q("", windows=True) == '""'
+    for v in values:
+        assert shlex.split(q(v, windows=True)) == [v]                                    # and the value comes back whole
+
+
+def test_hook_command_on_windows_runs_in_cmd_exe_and_in_bash(monkeypatch):
+    from types import SimpleNamespace
+    sys.path.insert(0, str(ROOT))
+    import hermind_cli
+    from pathlib import PureWindowsPath
+    monkeypatch.setattr(sys, "executable", r"C:\Program Files\Python 3\python.exe")
+    monkeypatch.setattr(hermind_cli, "ROOT", PureWindowsPath(r"D:\a\hermind\hermind\hermind"))
+    db = r"C:\Users\me\my notes\m.db"
+    assert hermind_cli.hook_command(SimpleNamespace(source="checkout"), db, windows=True) == (
+        r'"C:\Program Files\Python 3\python.exe" "D:\a\hermind\hermind\hermind\hermind_hook.py" --db "C:\Users\me\my notes\m.db"')
+    assert hermind_cli.hook_command(SimpleNamespace(source="pipx"), None, windows=True) == "hermind-hook"
+    assert hermind_cli.hook_command(SimpleNamespace(source="git"), db, windows=True).startswith(
+        'uvx --from git+https://github.com/fungane/hermind@v')
+    import shlex                                                                          # POSIX: the line it always was
+    assert hermind_cli.hook_command(SimpleNamespace(source="checkout"), "/tmp/m y.db", windows=False) == " ".join(
+        shlex.quote(x) for x in [sys.executable, str(hermind_cli.ROOT / "hermind_hook.py"), "--db", "/tmp/m y.db"])

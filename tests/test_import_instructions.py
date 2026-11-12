@@ -33,6 +33,7 @@ def clean(monkeypatch, tmp_path):
     for k in ("HERMIND_DB_KEY", "HERMIND_DB_KEY_FILE", "HERMIND_DB"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))                # Windows reads this one, not HOME
     (tmp_path / "home").mkdir()
 
 

@@ -127,6 +127,7 @@ def test_the_folder_imports_back_as_the_round_trip_of_part_two_says(tmp_path, db
     assert "Priya keeps the Orchid dashboard on PostgreSQL." not in rows
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix permission bits: a file there reports mode 0o666 (a folder 0o777) whatever the code asks for")
 def test_the_markdown_folder_is_readable_by_the_owner_only(tmp_path):
     """Notes can be sensitive: like the JSON export (mode 600), every file is 600 and every folder 700."""
     import os

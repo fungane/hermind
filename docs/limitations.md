@@ -13,9 +13,22 @@ What does not work well yet, and what to keep in mind.
 - **Young and tested by one person.** The recall numbers come from one person's notes plus synthetic sets
   ([how well it recalls](how-it-works.md#how-well-does-it-recall)). The test suite is run on Linux (Python 3.10, 3.12, 3.14)
   and macOS (3.10, 3.14) on the maintainer's machines before each release; a person has used it only on Linux.
-- **Windows is not supported yet.** GitHub Actions runs the suite there as information only: some tests still fail (hook
-  installer quoting, path separators in generated config snippets, `uvx` detection), and the owner-only file modes do not
-  apply. The stdio MCP server itself uses UTF-8 explicitly. Reports from Windows users are welcome.
+- **Windows is not supported yet.** GitHub Actions runs the suite there (Python 3.10 and 3.14) as information only, and no
+  person has used Hermind on Windows. What the Windows run leaves out, and what it knows to be wrong:
+  - *Cannot apply there.* The owner-only modes (600 for files, 700 for folders) are Unix permission bits; Windows ignores
+    them, so backups, exports and key files are as readable as the folder that holds them (see [privacy](privacy.md#encryption)).
+    Semantic search is POSIX-only: `setup-vectors` refuses, the embedding worker is read with `select()` on a pipe (Windows
+    allows that only for sockets) and its Python is looked for in `venv/bin`. Without it, search is lexical, as without any vectors.
+  - *Known defects (the tests that show them are marked as expected failures on Windows).*
+    `authorize-key` writes a POSIX command line (`python3`, single quotes around the paths), which a Windows OpenSSH
+    server cannot run. `encrypt_db.py --generate-key-file` says "already exists" instead of "cannot write" when it cannot
+    make the folder of the key file. A command ended by a closed pipe (`hermind export | more`) prints
+    `Exception ignored ... OSError: [Errno 22]` at exit, because Windows reports a closed pipe as EINVAL rather than as a broken pipe.
+  - *Changed for Windows, not yet tried by a person there.* The hook command that `install-hook` writes and the
+    `claude mcp add` line of `config claude-code` quote with double quotes instead of POSIX single quotes (on Linux and macOS
+    they are unchanged). A path with a cmd.exe special character (`&`, `|`, `<`, `>`, `^`, `%`) is still not escaped.
+  - Generated config snippets carry native paths (`C:\...`); a path you give as `/data/m.db` becomes `\data\m.db`.
+  The stdio MCP server itself uses UTF-8 explicitly. Reports from Windows users are welcome.
 
 ## Recall
 
