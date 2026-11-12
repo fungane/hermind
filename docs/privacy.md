@@ -75,7 +75,7 @@ SQLCipher (AES-256). Without one nothing changes and nothing extra is installed.
 
 ```bash
 pip install ".[encrypted]"     # in a checkout: the sqlcipher3 driver (wheels for Linux x86_64 / aarch64, macOS, Windows)
-# for uvx, start the server with --from "hermind[encrypted] @ git+https://github.com/fungane/hermind@v1.0.0"
+# for uvx, start the server with --from "hermind[encrypted] @ git+https://github.com/fungane/hermind@v1.0.1"
 python3 hermind/tools/encrypt_db.py --generate-key-file ~/.hermind/db.key   # random key, mode 600, never overwrites
 export HERMIND_DB_KEY_FILE=~/.hermind/db.key
 # stop Hermes, hermind-mcp and the vector worker, then:

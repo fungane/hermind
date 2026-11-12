@@ -21,13 +21,13 @@ Hermind is standard-library Python 3.10 or newer, with no runtime dependencies. 
 
 ```bash
 # MCP server: run straight from git (git URL form is pinned to the release tag), or from a checkout
-uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind-mcp --version
+uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp --version
 uvx --from /path/to/hermind hermind-mcp --version
-pipx install git+https://github.com/fungane/hermind@v1.0.0        # or: pip install .   (from a checkout)
+pipx install git+https://github.com/fungane/hermind@v1.0.1        # or: pip install .   (from a checkout)
 python hermind/hermind_mcp.py                                      # from a checkout, no install
 
 # Hermes plugin
-git clone --branch v1.0.0 https://github.com/fungane/hermind.git ~/hermind
+git clone --branch v1.0.1 https://github.com/fungane/hermind.git ~/hermind
 cd ~/hermind && python3 hermind_cli.py install-hermes --dry-run   # preview; add --profile NAME for a profile
 python3 hermind_cli.py install-hermes                              # backs up first, verifies after, prints a rollback
 hermes config set memory.provider hermind                          # first time only; then restart the Hermes gateway and app
@@ -94,8 +94,8 @@ server fails to start.
 ### Claude Code
 
 ```bash
-claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind-mcp
-claude mcp add hermind-rw -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind-mcp
+claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp
+claude mcp add hermind-rw -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp
 ```
 
 In `claude -p` (non-interactive) the tools must be allowed first, for example
@@ -116,7 +116,7 @@ merge it into `$DSH_HOME/cordis.patch.yml`; restart `dsh web` after editing):
         serverName: hermind
         transport: stdio
         command: uvx
-        args: ['--from', 'git+https://github.com/fungane/hermind@v1.0.0', 'hermind-mcp']
+        args: ['--from', 'git+https://github.com/fungane/hermind@v1.0.1', 'hermind-mcp']
         env:
           HERMIND_DB: /home/you/.hermind/memory.db
         toolCallTimeoutMs: 30000
@@ -135,7 +135,7 @@ Most clients use this `mcpServers` shape (add `"--write"` to `args` to allow wri
   "mcpServers": {
     "hermind": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.0", "hermind-mcp"],
+      "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"],
       "env": { "HERMIND_DB": "/home/you/.hermind/memory.db" }
     }
   }
@@ -149,7 +149,7 @@ Most clients use this `mcpServers` shape (add `"--write"` to `args` to allow wri
 | **Antigravity CLI** (`agy`, Google's replacement for Gemini CLI) | `~/.gemini/config/mcp_config.json` (all projects) or `.agents/mcp_config.json` (one project), under `mcpServers`; separate from `settings.json`. Its App and IDE use the same format, but their global path was not checked |
 | **Gemini CLI** (legacy; no longer served for Google AI Pro/Ultra and free accounts since 2026-06-18; API-key and Code Assist Standard/Enterprise users can keep it) | `~/.gemini/settings.json`, under `mcpServers` |
 | **Claude Desktop** (chat app, not Claude Code) | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows); restart the app. The app's own route for packaged servers is Settings → Extensions (`.mcpb` files); the config-file route was not re-checked on the newest build |
-| **Codex / ChatGPT desktop app** (CLI, IDE extension and the desktop app share one file) | `~/.codex/config.toml` (TOML, below) or `codex mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind-mcp` |
+| **Codex / ChatGPT desktop app** (CLI, IDE extension and the desktop app share one file) | `~/.codex/config.toml` (TOML, below) or `codex mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp` |
 | **Windsurf** (now Devin Desktop) | `~/.config/devin/mcp_config.json` (older versions: `~/.codeium/windsurf/mcp_config.json`) |
 | **Qwen Code** | `mcpServers` in `settings.json`, or `qwen mcp add` |
 | **Amp** | `amp.mcpServers` in `~/.config/amp/settings.json` (same `command` / `args` / `env` fields) |
@@ -172,23 +172,23 @@ These clients use a different shape:
 ```jsonc
 // VS Code / GitHub Copilot: .vscode/mcp.json (workspace) or your user profile
 { "servers": { "hermind": { "type": "stdio", "command": "uvx",
-    "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.0", "hermind-mcp"] } } }
+    "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"] } } }
 
 // Zed: settings.json
 { "context_servers": { "hermind": { "command": "uvx",
-    "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.0", "hermind-mcp"], "env": {} } } }
+    "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"], "env": {} } } }
 
 // OpenCode: opencode.json or opencode.jsonc (command is one array, env is called "environment");
 // `opencode mcp add` writes the same block
 { "mcp": { "hermind": { "type": "local",
-    "command": ["uvx", "--from", "git+https://github.com/fungane/hermind@v1.0.0", "hermind-mcp"],
+    "command": ["uvx", "--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"],
     "environment": { "HERMIND_DB": "/home/you/.hermind/memory.db" } } } }
 ```
 
 ```json5
 // OpenClaw: openclaw.json
 { mcp: { servers: { hermind: { command: "uvx",
-    args: ["--from", "git+https://github.com/fungane/hermind@v1.0.0", "hermind-mcp"] } } } }
+    args: ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"] } } } }
 ```
 
 ```yaml
@@ -200,14 +200,14 @@ schema: v1
 mcpServers:
   - name: hermind
     command: uvx
-    args: ["--from", "git+https://github.com/fungane/hermind@v1.0.0", "hermind-mcp"]
+    args: ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"]
 ```
 
 ```toml
 # Codex / ChatGPT desktop app: ~/.codex/config.toml
 [mcp_servers.hermind]
 command = "uvx"
-args = ["--from", "git+https://github.com/fungane/hermind@v1.0.0", "hermind-mcp"]
+args = ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"]
 
 [mcp_servers.hermind.env]
 HERMIND_DB = "/home/you/.hermind/memory.db"

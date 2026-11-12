@@ -20,11 +20,11 @@ to the user word for word; do not improvise a workaround.
 ## 0. Get the code
 
 ```bash
-git clone --branch v1.0.0 https://github.com/fungane/hermind.git ~/hermind && cd ~/hermind
+git clone --branch v1.0.1 https://github.com/fungane/hermind.git ~/hermind && cd ~/hermind
 ```
 
 The commands below are written as `python3 hermind_cli.py ...` from that folder. If Hermind was installed as a command
-(pip, pipx, `uv tool install`), write `hermind ...`; with uvx only, `uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind ...`. The checkout needs only Python 3.10 or newer; MCP clients that use `--source git`
+(pip, pipx, `uv tool install`), write `hermind ...`; with uvx only, `uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind ...`. The checkout needs only Python 3.10 or newer; MCP clients that use `--source git`
 also need [uv](https://docs.astral.sh/uv/).
 
 ## 1. Look first

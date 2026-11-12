@@ -1,8 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.0.1
 
-- Windows: the hook command from `install-hook` and the `claude mcp add` line from `config claude-code` are quoted for Windows shells (no change on Linux and macOS); the tests that assumed POSIX paths now compare native ones, what cannot apply on Windows is skipped there, and three known Windows defects are listed in docs/limitations.md.
+Windows only; nothing changes on Linux and macOS. Windows is still not supported, but the test suite now passes there
+(GitHub Actions, Python 3.10 and 3.14).
+
+- `install-hook` writes the hook command, and `config claude-code` prints the `claude mcp add` line, with double quotes
+  on Windows. Windows shells do not read POSIX single quotes, so the Claude Code hook never ran there.
+- Tests that compared paths with POSIX strings now compare native paths. What cannot apply on Windows (owner-only file
+  modes, semantic search) is skipped there, each with its reason.
+- Three known Windows defects are listed in docs/limitations.md: `authorize-key` writes a POSIX command line,
+  `encrypt_db.py --generate-key-file` gives the wrong message when it cannot make the key's folder, and output cut off
+  by a closed pipe prints an `OSError` line at exit.
 
 ## 1.0.0
 

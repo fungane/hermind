@@ -10,7 +10,7 @@
 
 [English](README.md) · 繁體中文
 
-![version](https://img.shields.io/badge/version-1.0.0-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![version](https://img.shields.io/badge/version-1.0.1-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![deps](https://img.shields.io/badge/runtime%20deps-stdlib%20only-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 </div>
@@ -34,7 +34,7 @@
 **Hermes agent**（每輪對話前自動回想、每次回覆後自動記錄、審核佇列）：
 
 ```bash
-git clone --branch v1.0.0 https://github.com/fungane/hermind.git ~/hermind
+git clone --branch v1.0.1 https://github.com/fungane/hermind.git ~/hermind
 cd ~/hermind
 python3 hermind_cli.py install-hermes --dry-run     # 顯示會做甚麼；其他 profile 加 --profile NAME
 python3 hermind_cli.py install-hermes               # 先備份，再複製外掛，然後檢查結果
@@ -44,7 +44,7 @@ hermes config set memory.provider hermind           # 之後重新啟動 Hermes 
 **Claude Code、Cursor、Codex 和其他 MCP 客戶端**（需要 [uv](https://docs.astral.sh/uv/)）：
 
 ```bash
-claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind-mcp --write
+claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp --write
 ```
 
 其他 20 多個客戶端的設定可以用 `hermind config CLIENT --write` 印出來（[docs/setup.md](docs/setup.md#mcp-clients)，英文）。
@@ -55,14 +55,14 @@ claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0
 **檢查一下，再在沒有 agent 的情況下試用：**
 
 ```bash
-uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind selftest     # 幾秒完成，不碰任何真實資料
-uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind remember "Atlas 的訂單用 PostgreSQL" --keywords "orders database 訂單 資料庫"
-uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind search "訂單用哪個資料庫"
+uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind selftest     # 幾秒完成，不碰任何真實資料
+uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind remember "Atlas 的訂單用 PostgreSQL" --keywords "orders database 訂單 資料庫"
+uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind search "訂單用哪個資料庫"
 ```
 
-`@v1.0.0` 固定安裝測試過的版本；要升級就改這個數字。下面的 `hermind` 代表整句
-`uvx --from git+https://github.com/fungane/hermind@v1.0.0 hermind`（或者用
-`uv tool install git+https://github.com/fungane/hermind@v1.0.0` 裝一次指令）。
+`@v1.0.1` 固定安裝測試過的版本；要升級就改這個數字。下面的 `hermind` 代表整句
+`uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind`（或者用
+`uv tool install git+https://github.com/fungane/hermind@v1.0.1` 裝一次指令）。
 
 ## 你的資料
 
