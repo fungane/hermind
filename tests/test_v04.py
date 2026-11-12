@@ -658,3 +658,33 @@ def test_vector_profiles_pick_model_files_names_and_prefixes(tmp_path):
     assert q.sec_per_note > d.sec_per_note > l.sec_per_note        # heavy models get a longer wait per batch (bge-m3 timed out at 0.15)
     assert VectorIndex({"sec_per_note": 2}, "x.db").sec_per_note == 2.0
 
+
+
+def test_build_summaries_skips_an_entity_whose_summary_is_refused(tmp_path, capsys):
+    """Round 2: a RefusedWrite from replace_summaries ended the whole run with a traceback."""
+    import importlib.util, io
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("build_summaries_r2", root / "tools" / "build_summaries.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    import store as store_mod
+    db = tmp_path / "s.db"
+    s = store_mod.DecisionStore(str(db))
+    ids = {e: [s.add(f"{e} fact number {i} about the rack", kind="state", entities=[e])[0] for i in range(3)] for e in ("swap", "dns")}
+    s.close()
+    bad = "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+
+    def fake_work(cfg, entity, notes):
+        text = f"The key is {bad}" if entity == "swap" else "DNS is now on the new rack"
+        return entity, notes, [(text, [n["id"] for n in notes])], "m", None
+    mod.work = fake_work
+    cfg = mod.build_parser().parse_args(["--db", str(db), "--base-url", "http://127.0.0.1:9/v1", "--model", "m", "--concurrency", "1"])
+    out = io.StringIO()
+    stats = mod.run(cfg, out)
+    assert stats["refused"] == 1 and stats["written"] == 1 and stats["entities"] == 2
+    events = [json.loads(l) for l in out.getvalue().splitlines()]
+    assert [e["event"] for e in events] == ["refused", "done"] or sorted(e["event"] for e in events) == ["done", "refused"]
+    assert bad not in out.getvalue() and bad not in capsys.readouterr().err
+    s = store_mod.DecisionStore(str(db))
+    assert [r[0] for r in s.conn.execute("SELECT source_session FROM notes WHERE kind='summary'")] == ["summary:dns"]
+    s.close()

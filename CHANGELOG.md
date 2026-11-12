@@ -7,7 +7,8 @@ and for any agent that speaks MCP. Works with no LLM and no network.
 
 **Memory and search**
 - Notes with a kind (decision, preference, tech, state, news, chat, summary), keywords, entities, pins and trust.
-  Decisions, preferences and technical notes never expire; idle chat, news and state notes lose rank slowly.
+  Decisions, preferences and technical notes never expire, and neither does a note you save yourself without choosing
+  chat or news (notes saved before this version keep the expiry they were given); automatically captured chat and news expire (90 and 14 days); idle chat, news and state notes lose rank slowly.
 - Search for English, Chinese and Cantonese: BM25 with synonym groups and Traditional/Simplified folding, an entity
   graph, time words and recency, fused by reciprocal rank. About 20 ms on 5,000 notes.
 - Consolidation that never deletes: near-duplicates are merged and outdated facts superseded, and every change can be

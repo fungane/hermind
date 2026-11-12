@@ -248,3 +248,36 @@ p.shutdown()
         pytest.skip("Hermes dependencies not importable here: " + res.stderr.strip().splitlines()[-1])
     assert res.returncode == 0, res.stderr
     assert "OK True" in res.stdout
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX only")
+def test_until_and_since_use_whole_local_days_on_dst_days(store, monkeypatch):
+    import os
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    try:
+        def at(*ymdhm):
+            return time.mktime((*ymdhm, 0, 0, 0, -1))
+        spring, fall_late, fall_next = (at(2026, 3, 9, 0, 30), at(2026, 11, 1, 23, 30), at(2026, 11, 2, 0, 10))
+        ids = {}
+        for key, t in (("spring", spring), ("late", fall_late), ("next", fall_next)):
+            ids[key], _ = store.add(f"Zorblax backup {key} window runs on node seven", kind="tech", created_at=t)
+        now = at(2026, 12, 1, 12, 0)
+
+        def found(**kw):
+            via_search = {r["id"] for r in store.search("Zorblax backup", limit=10, now=now, **kw)}
+            via_multi = {r["id"] for r in store.search_multi(["Zorblax backup"], limit=10, now=now, **kw)}
+            via_ids = {r["id"] for r in store.notes_by_ids(ids.values(), now=now, **kw)}
+            assert via_search == via_multi == via_ids, (kw, via_search, via_multi, via_ids)
+            return via_search
+        # 2026-03-08 is 23 h long after the clocks went forward on the 8th: 00:30 on the 9th is NOT part of it ...
+        assert ids["spring"] not in found(until="2026-03-08")
+        assert ids["spring"] in found(until="2026-03-09")
+        # ... and 2026-11-01 is 25 h long: 23:30 on that day IS part of it, 00:10 on the 2nd is not
+        assert ids["late"] in found(until="2026-11-01") and ids["next"] not in found(until="2026-11-01")
+        assert found(since="2026-11-02", until="2026-11-02") == {ids["next"]}
+        assert found(since="2026-11-01", until="2026-11-01") == {ids["late"]}
+        assert found(since="2026-03-09", until="2026-03-09") == {ids["spring"]}
+    finally:
+        monkeypatch.undo()
+        time.tzset()

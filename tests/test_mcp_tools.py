@@ -213,3 +213,47 @@ def test_config_file(mcp_spawn, tmp_path, seeded):
     bad.write_text("[1]")
     c2 = mcp_spawn("--config", str(bad), handshake=False)
     assert c2.close() == 2 and "JSON object" in c2.stderr()
+
+
+def test_remember_without_a_chosen_kind_never_expires(mcp_spawn, tmp_path):
+    db = str(tmp_path / "e.db")
+    c = mcp_spawn("--db", db, "--write", "--trust-writes", "--tools", "search,get,remember")
+    a, err = c.call_json("memory_remember", content="Atlas uses PostgreSQL for orders", kind="auto")
+    assert not err and a["created"]
+    b, err = c.call_json("memory_remember", content="Zorblax backup runs at 03:00 on node seven", keywords="backup")
+    assert not err
+    d, err = c.call_json("memory_remember", content="Quillon reports go out on Fridays", kind="chat")
+    assert not err
+    n, err = c.call_json("memory_remember", content="Plinth rota changes on Monday", kind="news")
+    assert not err
+    c.close()
+    rows = {r[0]: (r[1], r[2]) for r in sqlite3.connect(db).execute("SELECT id, kind, expires_at FROM notes")}
+    assert rows[a["id"]][0] == "chat" and rows[a["id"]][1] is None          # classified chat, but saved on purpose
+    assert rows[b["id"]][1] is None
+    assert rows[d["id"]][1] is not None and rows[n["id"]][1] is not None     # a kind chosen by the caller keeps its TTL
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("memory_get", {"id": 2 ** 70}), ("memory_get", {"id": -2 ** 70}), ("memory_search", {"query": "x", "limit": 2 ** 70}),
+    ("memory_list", {"limit": 2 ** 64})])
+def test_integer_arguments_outside_the_sqlite_range_are_argument_errors(mcp_spawn, seeded, tool, args):
+    c = mcp_spawn("--db", seeded)
+    res, err = c.call_json(tool, **args)
+    assert err is True and "out of range" in res["error"] and "Overflow" not in res["error"]
+    assert c.request("ping")["result"] == {}
+
+
+def test_mcp_writer_without_trust_writes_does_not_change_an_existing_expiry(mcp_spawn, tmp_path):
+    from store import DecisionStore
+    text = "Atlas uses PostgreSQL for orders"
+    for flag, expect_none in (([], False), (["--trust-writes"], True)):
+        db = str(tmp_path / f"w{len(flag)}.db")
+        s = DecisionStore(db)
+        nid, _ = s.add(text, kind="chat")
+        s.close()
+        c = mcp_spawn("--db", db, "--write", *flag, "--tools", "search,get,remember")
+        res, err = c.call_json("memory_remember", content=text)
+        assert not err and res["id"] == nid and res["created"] is False
+        c.close()
+        exp = sqlite3.connect(db).execute("SELECT expires_at FROM notes WHERE id=?", (nid,)).fetchone()[0]
+        assert (exp is None) == expect_none, flag

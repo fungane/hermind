@@ -149,7 +149,8 @@ class AuxMixin:
         s_since, s_until = _parse_when(since), _parse_when(until)
         window = None
         if s_since is not None or s_until is not None:
-            window = (s_since if s_since is not None else 0.0, (s_until + DAY) if s_until is not None else 1e18)
+            window = (s_since if s_since is not None else 0.0,
+                      day_bounds(s_until)[1] if s_until is not None else 1e18)   # a local day is 23 or 25 h on a DST day
         want_tags = _clean_tags(tags).split()
         as_end = day_bounds(as_of)[1] if as_of not in (None, "") else None
         with self._lock:

@@ -358,3 +358,91 @@ def test_cli_end_to_end_in_a_subprocess(tmp_path):
     r = run("--readers")
     assert r.returncode == 0 and "markdown" in r.stdout
 
+
+
+def test_edit_back_to_forgotten_text_is_refused_not_a_traceback(import_md, tmp_path):
+    db, out = tmp_path / "t.db", tmp_path / "out"
+    a, b, _ = three_notes(db)
+    s = DecisionStore(str(db))
+    gone = "Zorblax backup runs at 03:00 every night on node seven."
+    s.forget(s.add(gone, "tech")[0])
+    s.close()
+    export(db, out)
+    f = next(p for p in out.rglob("*.md") if f"id: {a}\n" in p.read_text(encoding="utf-8"))
+    text = f.read_text(encoding="utf-8")
+    body = "Nimbus backups run daily at 03:00 and keep 7 days."
+    f.write_text(text.replace(body, gone), encoding="utf-8")
+    for flags in ((), ("--apply",)):
+        code, report = tool_import(import_md, db, out, *flags)
+        assert code == 1 and "refused" in report and "forgotten" in report and "Traceback" not in report
+    assert rows(db)[0]["content"] == body
+
+
+# -- symbolic links are never followed ---------------------------------------------------------------------------------
+
+import os  # noqa: E402
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+
+
+def _tree_with_links(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "host.md").write_text("Zorblax backup runs at 03:00 on node seven.\n", encoding="utf-8")
+    (outside / "deep.md").write_text("Quillon reports are due on Fridays.\n", encoding="utf-8")
+    (outside / ".hid").mkdir()
+    (outside / ".hid" / "x.md").write_text("Plinth rota changes on Monday.\n", encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "own.md").write_text("The Nimbus cache keeps entries for ten minutes.\n", encoding="utf-8")
+    os.symlink(outside / "host.md", src / "escape.md")             # a file link
+    os.symlink(outside, src / "linked-dir")                        # a folder link
+    os.symlink(outside / ".hid", src / ".hidden-link")             # a link to a folder, with a hidden name
+    os.symlink(src / "missing.md", src / "broken.md")
+    return src
+
+
+@posix_only
+def test_walk_folder_lists_links_and_never_follows_them(tmp_path):
+    src = _tree_with_links(tmp_path)
+    w = md_notes.walk_folder(src)
+    assert [p.name for p in w.notes] == ["own.md"]
+    assert sorted(p.name for p in w.links) == [".hidden-link", "broken.md", "escape.md", "linked-dir"]
+
+
+@posix_only
+def test_hermind_import_skips_symlinks_and_reports_them(tmp_path):
+    src = _tree_with_links(tmp_path)
+    db = tmp_path / "t.db"
+    res = import_core.run_import(str(src), db, apply=True, backup=False)
+    assert res["counts"]["new"] == 1 and res["counts"]["unreadable"] == 4
+    by = {e["origin"]: e for e in res["entries"] if e["outcome"] == "unreadable"}
+    assert sorted(by) == [".hidden-link/", "broken.md", "escape.md", "linked-dir/"]
+    assert all("symbolic link" in e["reason"] for e in by.values())
+    s = DecisionStore(str(db))
+    try:
+        texts = [r[0] for r in s.conn.execute("SELECT content FROM notes")]
+        assert len(texts) == 1 and "Nimbus" in texts[0]
+    finally:
+        s.close()
+
+
+@posix_only
+def test_single_file_given_directly_is_followed_even_when_it_is_a_link(tmp_path):
+    # the user named this file: following it is a decision, not an escape
+    outside = tmp_path / "outside.md"
+    outside.write_text("Zorblax backup runs at 03:00 on node seven.\n", encoding="utf-8")
+    link = tmp_path / "named.md"
+    os.symlink(outside, link)
+    res = import_core.run_import(str(link), tmp_path / "t.db", backup=False)
+    assert res["counts"]["new"] == 1
+
+
+@posix_only
+def test_import_md_tool_skips_symlinks_and_reports_them(import_md, tmp_path):
+    src = _tree_with_links(tmp_path)
+    db = tmp_path / "t.db"
+    DecisionStore(str(db)).close()
+    code, report = tool_import(import_md, db, src, "--apply")
+    assert code == 0 and report.count("symbolic link") == 4 and "4 skipped" in report and "1 created" in report
+    assert all("Zorblax" not in r["content"] and "Quillon" not in r["content"] for r in rows(db))

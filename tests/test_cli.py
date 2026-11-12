@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -359,11 +360,18 @@ def test_authorize_key_generate_never_overwrites(home, tmp_path):
 
 
 def test_config_restricted_sends_no_command(home):
-    d = json.loads(run("config", "cursor", "--remote", "me@box", "--restricted", "--json", home=home, check=0).stdout)
+    d = json.loads(run("config", "cursor", "--remote", "me@box", "--restricted", "--ssh-key", "/k/restricted", "--json", home=home, check=0).stdout)
     args = json.loads(d["snippet"])["mcpServers"]["hermind"]["args"]
-    assert args[-1] == "me@box" and "forced command" in d["note"]
-    assert run("config", "cursor", "--remote", "me@box", "--restricted", "--write", "--json", home=home).returncode == 2
-    assert run("config", "cursor", "--restricted", "--json", home=home).returncode == 2
+    assert args[-1] == "me@box" and args[args.index("-i") + 1] == "/k/restricted" and "forced command" in d["note"]
+    assert run("config", "cursor", "--remote", "me@box", "--restricted", "--ssh-key", "/k/r", "--write", "--json", home=home).returncode == 2
+    assert run("config", "cursor", "--restricted", "--ssh-key", "/k/r", "--json", home=home).returncode == 2
+
+
+def test_config_restricted_without_ssh_key_is_refused_not_marked_tested(home):
+    for client in ("claude-code", "cursor"):
+        r = run("config", client, "--remote", "me@box", "--restricted", "--json", home=home)
+        d = json.loads(r.stdout)
+        assert r.returncode == 2 and "--ssh-key" in d["error"] and "snippet" not in d and "tested" not in d
 
 
 @pytest.mark.skipif(not os.path.exists("/usr/sbin/sshd") or not __import__("shutil").which("ssh-keygen"), reason="needs sshd and ssh-keygen")
@@ -432,9 +440,9 @@ def test_doctor_suggests_semantic_search_when_it_is_not_set_up(home, monkeypatch
 def test_remember_search_export_roundtrip(home, tmp_path):
     db = tmp_path / "m.db"
     r = run("remember", "Atlas uses PostgreSQL for orders", "--keywords", "orders database", "--db", str(db), home=home, check=0)
-    assert r.stdout.strip() == "saved note #1"
+    assert r.stdout.startswith("saved note #1 (kind: ")
     r = run("remember", "我哋用 Redis 做 cache", "--db", str(db), home=home, check=0)
-    assert r.stdout.strip() == "saved note #2"
+    assert r.stdout.startswith("saved note #2 (kind: ")
     s = run("search", "which database for orders", "--db", str(db), home=home, check=0)
     assert "PostgreSQL" in s.stdout.splitlines()[0]
     out = tmp_path / "e.json"
@@ -448,11 +456,12 @@ def test_remember_prints_a_readable_line_not_a_dict(home, tmp_path):
     db = tmp_path / "m.db"
     first = run("remember", "Atlas uses PostgreSQL for orders", "--db", str(db), home=home, check=0)
     again = run("remember", "Atlas uses PostgreSQL for orders", "--db", str(db), home=home, check=0)
-    assert first.stdout.strip() == "saved note #1"
-    assert again.stdout.strip() == "already saved as note #1"
+    assert first.stdout.strip() == "saved note #1 (kind: chat, does not expire)"
+    assert again.stdout.strip() == "already saved as note #1 (kind: chat, does not expire)"
     assert "{" not in first.stdout + again.stdout
     j = run("remember", "Atlas uses PostgreSQL for orders", "--db", str(db), "--json", home=home, check=0)
-    assert json.loads(j.stdout) == {"ok": True, "database": str(db), "id": 1, "created": False}
+    assert json.loads(j.stdout) == {"ok": True, "database": str(db), "id": 1, "created": False, "kind": "chat",
+                                 "expires": None}
 
 
 def test_search_missing_db_is_an_error_not_a_traceback(home, tmp_path):
@@ -522,3 +531,179 @@ def test_unknown_client_says_so_and_hook_answers_help(home):
     r = subprocess.run([sys.executable, str(ROOT / "hermind_hook.py"), "--help"], capture_output=True, text=True,
                        stdin=subprocess.DEVNULL, timeout=30)
     assert r.returncode == 0 and "hermind-hook" in r.stdout
+
+
+README_SENTENCE = "Atlas uses PostgreSQL for orders"
+
+
+def _store(db):
+    sys.path.insert(0, str(Path(CLI).parent))
+    from store import DecisionStore
+    return DecisionStore(str(db))
+
+
+def _expiry_of(db, nid=1):
+    s = _store(db)
+    try:
+        row = s.conn.execute("SELECT kind, expires_at FROM notes WHERE id=?", (nid,)).fetchone()
+        return row["kind"], row["expires_at"]
+    finally:
+        s.close()
+
+
+def _alive_after(db, days):
+    s = _store(db)
+    try:
+        s.maintenance(now=time.time() + days * 86400, consolidate=False)
+        return s.conn.execute("SELECT COUNT(*) FROM notes WHERE status='active'").fetchone()[0]
+    finally:
+        s.close()
+
+
+def test_remember_with_kind_auto_never_expires_but_keeps_the_classified_kind(home, tmp_path):
+    db = tmp_path / "m.db"
+    r = run("remember", README_SENTENCE, "--db", str(db), home=home, check=0)
+    kind, expires = _expiry_of(db)
+    assert kind == "chat" and expires is None                      # the text is classified chat; chat would expire in 90 days
+    assert r.stdout.strip() == "saved note #1 (kind: chat, does not expire)"
+    assert _alive_after(db, 400) == 1
+    j = json.loads(run("remember", README_SENTENCE, "--db", str(db), "--json", home=home, check=0).stdout)
+    assert j["kind"] == "chat" and j["expires"] is None
+
+
+def test_remember_with_an_explicit_chat_or_news_kind_still_expires(home, tmp_path):
+    db = tmp_path / "m.db"
+    r = run("remember", README_SENTENCE, "--kind", "chat", "--db", str(db), home=home, check=0)
+    assert _expiry_of(db)[1] is not None and re.search(r"\(kind: chat, expires 20\d\d-\d\d-\d\d\)", r.stdout)
+    assert _alive_after(db, 400) == 0
+    db2 = tmp_path / "n.db"
+    run("remember", "Zorblax maintenance window moves to Sunday", "--kind", "news", "--db", str(db2), home=home, check=0)
+    assert _expiry_of(db2)[1] is not None
+    assert _alive_after(db2, 20) == 0
+
+
+def test_remembering_the_same_text_again_on_purpose_removes_an_earlier_expiry(home, tmp_path):
+    db = tmp_path / "m.db"
+    run("remember", README_SENTENCE, "--kind", "chat", "--db", str(db), home=home, check=0)
+    assert _expiry_of(db)[1] is not None
+    r = run("remember", README_SENTENCE, "--db", str(db), home=home, check=0)
+    assert r.stdout.startswith("already saved as note #1") and "does not expire" in r.stdout
+    assert _expiry_of(db)[1] is None and _alive_after(db, 400) == 1
+
+
+WEIRD_DB = "/tmp/my dir/it's m\\k.db"
+WEIRD_KEY = '/tmp/key dir/"k" it\'s.key'
+
+
+def _walk_find(obj, key):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key:
+                return v
+            found = _walk_find(v, key)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _walk_find(v, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _config(home, client, *more):
+    return json.loads(run("config", client, "--json", "--write", "--db", WEIRD_DB, "--key-file", WEIRD_KEY, *more,
+                          home=home, check=0).stdout)
+
+
+@pytest.mark.parametrize("more", [(), ("--source", "checkout"), ("--remote", "me@host", "--remote-checkout", "/opt/it's dir/hermind")])
+def test_config_claude_code_shell_line_quotes_every_value(home, more):
+    import shlex
+    line = _config(home, "claude-code", *more)["snippet"]
+    argv = shlex.split(line)
+    assert argv[:4] == ["claude", "mcp", "add", "hermind"]
+    sep = argv.index("--")
+    pairs = [argv[i + 1] for i, a in enumerate(argv[:sep]) if a == "-e"]
+    reference = json.loads(_config(home, "cursor", *more)["snippet"])["mcpServers"]["hermind"]       # the same command, as JSON
+    assert argv[sep + 1:] == [reference["command"], *reference["args"]]
+    assert sorted(pairs) == sorted(f"{k}={v}" for k, v in reference.get("env", {}).items())
+    if not more or more == ("--source", "checkout"):
+        assert f"HERMIND_DB={WEIRD_DB}" in pairs and f"HERMIND_DB_KEY_FILE={WEIRD_KEY}" in pairs
+
+
+@pytest.mark.parametrize("client", JSON_CLIENTS)
+def test_config_json_snippets_keep_awkward_paths_intact(client, home):
+    obj = json.loads(_config(home, client)["snippet"])
+    env = _walk_find(obj, "env") or _walk_find(obj, "environment")
+    assert env["HERMIND_DB"] == WEIRD_DB and env["HERMIND_DB_KEY_FILE"] == WEIRD_KEY
+
+
+def test_config_toml_and_yaml_snippets_keep_awkward_paths_intact(home):
+    tomllib = pytest.importorskip("tomllib")
+    t = tomllib.loads(_config(home, "codex", "--source", "checkout")["snippet"])["mcp_servers"]["hermind"]
+    assert t["env"]["HERMIND_DB"] == WEIRD_DB and t["env"]["HERMIND_DB_KEY_FILE"] == WEIRD_KEY
+    assert t["command"] == sys.executable and t["args"] == [str(ROOT / "hermind_mcp.py")]
+    for client in ("continue", "dsh"):                     # YAML: every value is a JSON string, which YAML reads the same way
+        lines = _config(home, client, "--source", "checkout")["snippet"].splitlines()
+        values = {ln.split(":", 1)[0].strip(): ln.split(":", 1)[1].strip() for ln in lines if ":" in ln}
+        assert json.loads(values["command"]) == sys.executable
+        assert json.loads(values["HERMIND_DB"]) == WEIRD_DB and json.loads(values["HERMIND_DB_KEY_FILE"]) == WEIRD_KEY
+
+
+def test_install_hermes_outside_a_checkout_advises_the_pinned_clone(home, tmp_path, monkeypatch, capsys):
+    sys.path.insert(0, str(ROOT))
+    import hermind_cli
+    monkeypatch.setattr(hermind_cli, "ROOT", tmp_path / "not-a-checkout")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    code = hermind_cli.main(["install-hermes", "--dry-run", "--json"])
+    d = json.loads(capsys.readouterr().out)
+    assert code != 0 and d["ok"] is False
+    assert f"clone --branch v{hermind_cli.version()} https://github.com/fungane/hermind.git" in d["error"]
+    assert "clone https://github.com/fungane/hermind " not in d["error"]
+
+
+def test_config_restricted_ssh_uses_only_the_named_key(home):
+    """-i alone still offers the agent's keys first: a normal authorised key would open a shell. IdentitiesOnly=yes stops that."""
+    for client in ("cursor", "zed", "codex", "continue", "opencode"):
+        d = json.loads(run("config", client, "--remote", "me@box", "--restricted", "--ssh-key", "/k/r", "--json", home=home).stdout)
+        assert "IdentitiesOnly=yes" in d["snippet"] and d["snippet"].index("IdentitiesOnly=yes") < d["snippet"].index("/k/r"), client
+    d = json.loads(run("config", "cursor", "--remote", "me@box", "--ssh-key", "/k/r", "--json", home=home).stdout)   # unrestricted too
+    assert "IdentitiesOnly=yes" in d["snippet"]
+    d = json.loads(run("config", "cursor", "--remote", "me@box", "--json", home=home).stdout)
+    assert "IdentitiesOnly" not in d["snippet"] and "-i" not in json.loads(d["snippet"])["mcpServers"]["hermind"]["args"]
+    d = run("config", "claude-code", "--remote", "me@box", "--restricted", "--ssh-key", "/k/r", home=home).stdout
+    assert "IdentitiesOnly=yes" in d
+
+
+def test_config_errors_in_text_mode_are_one_error_line(home):
+    for argv in (["claude-code", "--remote", "a@b", "--restricted"], ["cursor", "--restricted", "--ssh-key", "/k"],
+                 ["cursor", "--trust-writes"], ["cursor", "--remote-hermes-profile", "x"]):
+        r = run("config", *argv, home=home)
+        assert r.returncode == 2 and r.stdout.startswith("ERROR: ") and "Traceback" not in r.stderr and "KeyError" not in r.stderr, (argv, r)
+        assert r.stdout.count("\n") == 1
+
+
+def test_remembering_again_with_an_explicit_never_expiring_kind_removes_an_earlier_expiry(home, tmp_path):
+    """Round 2: --kind decision kept the old chat copy's 90 days; on an already expired copy the next purge removed it."""
+    db = tmp_path / "k.db"
+    run("remember", README_SENTENCE, "--kind", "chat", "--db", str(db), home=home, check=0)
+    assert _expiry_of(db)[1] is not None
+    r = run("remember", README_SENTENCE, "--kind", "decision", "--db", str(db), home=home, check=0)
+    assert r.stdout.startswith("already saved as note #1") and "does not expire" in r.stdout and "expires 20" not in r.stdout
+    assert _expiry_of(db) == ("chat", None) and _alive_after(db, 400) == 1
+    # an already expired copy is rescued too
+    db2 = tmp_path / "k2.db"
+    run("remember", README_SENTENCE, "--kind", "chat", "--db", str(db2), home=home, check=0)
+    s = _store(db2)
+    with s.conn:
+        s.conn.execute("UPDATE notes SET expires_at=?", (time.time() - 86400,))
+    s.close()
+    r = run("remember", README_SENTENCE, "--kind", "decision", "--db", str(db2), home=home, check=0)
+    assert "does not expire" in r.stdout and _alive_after(db2, 400) == 1
+    # a re-save that would itself expire (explicit chat) leaves the earlier expiry alone
+    db3 = tmp_path / "k3.db"
+    run("remember", README_SENTENCE, "--kind", "chat", "--db", str(db3), home=home, check=0)
+    before = _expiry_of(db3)
+    run("remember", README_SENTENCE, "--kind", "chat", "--db", str(db3), home=home, check=0)
+    assert _expiry_of(db3) == before and before[1] is not None

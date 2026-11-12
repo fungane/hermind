@@ -56,7 +56,7 @@ def main(argv=None) -> int:
     if os.environ.get("HERMIND_HOOK", "").strip().lower() in ("0", "off", "false", "no"):
         return 0
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.buffer.read().decode("utf-8-sig", "replace") if hasattr(sys.stdin, "buffer") else sys.stdin.read()
         data = json.loads(raw) if raw.strip() else {}
         if not isinstance(data, dict) or data.get("hook_event_name", "UserPromptSubmit") != "UserPromptSubmit":
             return 0
@@ -68,8 +68,18 @@ def main(argv=None) -> int:
             print(f"hermind-hook: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
         return 0
     if block:
-        sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
-                                                            "additionalContext": block}}, ensure_ascii=False))
+        out = json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": block}},
+                         ensure_ascii=False)
+        try:
+            raw = getattr(sys.stdout, "buffer", None)
+            if raw is not None:                           # UTF-8 bytes whatever the console encoding is (PYTHONIOENCODING=ascii ...)
+                raw.write(out.encode("utf-8", "replace"))
+                raw.flush()
+            else:
+                sys.stdout.write(out)
+        except Exception as exc:                          # a closed pipe or a broken console must not fail the prompt either
+            if os.environ.get("HERMIND_HOOK_DEBUG"):
+                print(f"hermind-hook: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
     return 0
 
 

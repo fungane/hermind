@@ -1,4 +1,7 @@
+import json
 import time
+
+import pytest
 
 
 def test_tokenize_unigram_bigram_and_latin(store_mod):
@@ -94,3 +97,71 @@ def test_invalid_kind_rejected(store):
     import pytest
     with pytest.raises(ValueError):
         store.add("x", kind="bogus")
+
+
+FORGOTTEN_TEXT = "Zorblax backup runs at 03:00 every night on node seven."
+
+
+def test_update_refuses_forgotten_text(store, store_mod):
+    gone, _ = store.add(FORGOTTEN_TEXT, kind="tech")
+    other, _ = store.add("Quillon reports are due on Fridays.", kind="tech")
+    assert store.forget(gone)
+    with pytest.raises(store_mod.RefusedWrite) as exc:
+        store.update(other, FORGOTTEN_TEXT)
+    from hermind.store_writes import FORGOTTEN_REFUSAL
+    assert str(exc.value) == FORGOTTEN_REFUSAL
+    with pytest.raises(store_mod.RefusedWrite):
+        store.update(other, "  " + FORGOTTEN_TEXT.upper() + " ")        # same normalised digest
+    assert store.get(other)["content"] == "Quillon reports are due on Fridays."
+    assert store.search("Zorblax") == [] and not store.history(other)
+
+
+def test_plugin_memory_update_returns_the_forgotten_refusal(provider):
+    gone = json.loads(provider.handle_tool_call("memory_remember", {"content": FORGOTTEN_TEXT, "kind": "tech"}))["id"]
+    other = json.loads(provider.handle_tool_call(
+        "memory_remember", {"content": "Quillon reports are due on Fridays.", "kind": "tech"}))["id"]
+    provider.handle_tool_call("memory_forget", {"id": gone})
+    out = json.loads(provider.handle_tool_call("memory_update", {"id": other, "content": FORGOTTEN_TEXT}))
+    assert out["refused"] and "forgotten" in out["error"]
+    assert provider._store.get(other)["content"] == "Quillon reports are due on Fridays."
+    assert provider._store.search("Zorblax") == []
+
+
+def test_search_for_only_very_common_words_still_returns_results_quickly(store):
+    with store.conn:
+        for i in range(2000):
+            store.add(f"Zorblax backup note number {i} runs on node {i * 7}", kind="tech", commit=False)
+    for query in ("zorblax", "zorblax backup", "backup note zorblax"):     # every term is in 100 % of the notes
+        t0 = time.time()
+        hits = store.search(query, limit=5)
+        took = time.time() - t0
+        assert len(hits) == 5 and all("Zorblax" in h["content"] for h in hits), query
+        assert took < 1.0, (query, took)
+    assert len(store.search_multi(["zorblax", "backup"], limit=5)) == 5
+    # a distinctive term still ranks first, as before
+    assert store.search("zorblax node 9359", limit=3)[0]["content"].endswith("on node 9359")
+
+
+def test_common_words_fallback_scores_one_term_over_a_bounded_number_of_postings(store, monkeypatch):
+    """Round 2: the fallback scored the 4 rarest common terms over EVERY posting (25x a normal search on 55,000 notes)."""
+    import sys
+    ss = sys.modules["hermind.store_search"]
+    monkeypatch.setattr(ss, "COMMON_FALLBACK_POSTINGS", 40)
+    with store.conn:
+        for i in range(500):
+            store.add(f"Zorblax backup note number {i} runs on node {i * 7}", kind="tech", commit=False)
+    now = time.time()
+    n_docs, avg_c, avg_k = store._live_stats(now)
+    terms = store._query_terms("zorblax backup")                         # both words are in 100 % of the notes
+    bm, kws, matched = store._bm25_multi([terms], n_docs, avg_c, avg_k, now, 10_000, None)[0]
+    assert 0 < len(bm) <= 40                                              # the scored rows are bounded, not 500
+    newest = {r[0] for r in store.conn.execute("SELECT id FROM notes ORDER BY id DESC LIMIT 40")}
+    assert set(bm) <= newest                                              # and they are the newest postings
+    hits = store.search("zorblax backup", limit=5)
+    assert len(hits) == 5 and all(h["id"] in newest for h in hits)
+    # without the fallback (the dedup probe, write_check) nothing is scored at all
+    assert store._bm25_multi([terms], n_docs, avg_c, avg_k, now, 10_000, None, rare_fallback=False) == [({}, {}, {})]
+    assert store.dedup_candidates("zorblax backup") == []
+    assert store.write_check("zorblax backup") == {"similar": [], "possible_conflicts": []}
+    # a query with one distinctive term is untouched by all of this
+    assert store.search("zorblax node 2093", limit=3)[0]["content"].endswith("on node 2093")

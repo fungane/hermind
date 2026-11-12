@@ -101,11 +101,11 @@ def write_folder(store, dest, *, by: str = "kind", include_history: bool = False
     for d, items in by_dir.items():
         lines = [f"# {d.relative_to(root)}", "", f"{len(items)} notes", ""]
         for n, name in items:
-            lines.append(f"- [#{n['id']}]({name}) {n['kind']} · {md_notes.iso_day(n['created_at'])} · "
+            lines.append(f"- [#{n['id']}]({md_notes.link_target(name)}) {n['kind']} · {md_notes.iso_day(n['created_at'])} · "
                          f"{md_notes.note_status(n)} — {l0(n['content'], 80)}")
         _private_write(d / "index.md", "\n".join(lines) + "\n")
     top = ["# hermind export", "", f"{len(notes)} notes from {db.name}, layout: by {by}", ""]
-    top += [f"- [{d.relative_to(root)}]({d.relative_to(root)}/index.md) — {len(items)} notes"
+    top += [f"- [{d.relative_to(root)}]({md_notes.link_target(d.relative_to(root).as_posix() + '/index.md')}) — {len(items)} notes"
             for d, items in sorted(by_dir.items())]
     _private_write(root / "index.md", "\n".join(top) + "\n")
     _private_write(root / MARKER, json.dumps({"db": str(db), "notes": len(notes), "by": by,

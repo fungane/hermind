@@ -411,3 +411,61 @@ def test_a_zip_whose_member_names_start_with_dot_slash_is_read(tmp_path):
     out = run(dotted, tmp_path / "b.db")
     assert out["reader"] == "chatgpt-export"
     assert [(e["origin"], e["outcome"]) for e in out["entries"]] == [(e["origin"], e["outcome"]) for e in plain["entries"]]
+
+
+def _convs():
+    return three_conversations()
+
+
+def test_zip_members_that_are_links_or_climb_out_are_refused(tmp_path):
+    z = tmp_path / "bad.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("conversations.json", json.dumps(_convs()))
+        zf.writestr("../conversations-001.json", json.dumps(_convs()))
+        zf.writestr("/etc/conversations-002.json", json.dumps(_convs()))
+        zf.writestr("a/../../conversations-003.json", json.dumps(_convs()))
+        link = zipfile.ZipInfo("conversations-004.json")
+        link.create_system = 3
+        link.external_attr = (0o120777 << 16)
+        zf.writestr(link, "/etc/hostname")
+    with rx.ExportSource(z) as src:
+        assert src.names == ["conversations.json"]
+        why = dict(src.refused)
+        assert "symbolic link" in why["conversations-004.json"]
+        assert sum("unsafe name" in r for r in why.values()) == 3
+    out = run(z, tmp_path / "t.db")
+    assert any("not read" in r and "unsafe name" in r and "symbolic link" in r for r in out["remarks"])
+    assert out["counts"]["new"] == run(write_zip(tmp_path / "ok.zip", _convs()), tmp_path / "u.db")["counts"]["new"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_links_in_an_unpacked_export_folder_are_not_followed(tmp_path):
+    import os
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "conversations-007.json").write_text(json.dumps(_convs()), encoding="utf-8")
+    export = write_folder(tmp_path / "export", _convs())
+    os.symlink(outside / "conversations-007.json", export / "conversations-007.json")
+    os.symlink(outside, export / "more")
+    with rx.ExportSource(export) as src:
+        assert "conversations-007.json" not in src.names and not any(n.startswith("more/") for n in src.names)
+        assert sorted(n for n, _ in src.refused) == ["conversations-007.json", "more/"]
+    out = run(export, tmp_path / "t.db")
+    assert any("symbolic link" in r for r in out["remarks"])
+
+
+def test_zip_member_names_are_normalised_before_the_unsafe_check(tmp_path):
+    """Round 2: ".//etc/x.json" was kept as "/etc/x.json" (the check ran before "./" was stripped)."""
+    z = tmp_path / "dots.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("conversations.json", json.dumps(_convs()))
+        zf.writestr(".//etc/conversations-001.json", json.dumps(_convs()))
+        zf.writestr("././/etc/conversations-002.json", json.dumps(_convs()))
+        zf.writestr("./../conversations-003.json", json.dumps(_convs()))
+        zf.writestr(".\\..\\conversations-004.json", json.dumps(_convs()))
+        zf.writestr("./conversations-005.json", json.dumps(_convs()))          # a plain ./ name is still fine
+    with rx.ExportSource(z) as src:
+        assert src.names == ["conversations-005.json", "conversations.json"]
+        assert sorted(n for n, _ in src.refused) == sorted([".//etc/conversations-001.json", "././/etc/conversations-002.json",
+                                                             "./../conversations-003.json", ".\\..\\conversations-004.json"])
+        assert all("unsafe name" in why for _, why in src.refused)

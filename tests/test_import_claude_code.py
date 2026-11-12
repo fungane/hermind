@@ -395,3 +395,112 @@ def test_auto_memory_directory_is_read_as_a_custom_folder(tmp_path, monkeypatch)
     w(S2 / "settings.json", '{"autoMemoryDirectory": "relative/dir"}')
     out2 = run(S2, tmp_path / "c2.db")
     assert any("not an absolute path" in r for r in out2["remarks"])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_links_inside_a_memory_folder_are_reported_and_never_read(tmp_path):
+    outside = tmp_path / "outside"
+    w(outside / "host.md", "Zorblax backup runs at 03:00 on node seven.\n")
+    w(outside / "dir" / "deep.md", "Quillon reports are due on Fridays.\n")
+    mem = tmp_path / "mem"
+    memory_folder(mem, "ok")
+    os.symlink(outside / "host.md", mem / "escape.md")
+    os.symlink(outside / "dir", mem / "linked")
+    db = tmp_path / "t.db"
+    res = import_core.run_import(str(mem), db, apply=True, backup=False)
+    bad = {e["origin"]: e["reason"] for e in res["entries"] if e["outcome"] == "unreadable"}
+    assert sorted(bad) == ["escape.md", "linked/"] and all("symbolic link" in r for r in bad.values())
+    assert not any("Zorblax" in n["content"] or "Quillon" in n["content"] for n in notes(db))
+    assert res["created"] >= 4
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_linked_instruction_files_of_a_config_folder_are_reported_and_never_read(tmp_path):
+    outside = tmp_path / "outside"
+    w(outside / "hostname.md", "# Secrets\nZorblax backup runs at 03:00 on node seven.\n")
+    w(outside / "rules" / "r.md", "# Rule\nQuillon reports are due on Fridays.\n")
+    cfg = tmp_path / "cfg"
+    w(cfg / "settings.json", "{}")
+    w(cfg / "CLAUDE.md", "# Prefs\nAnswer briefly.\n")
+    os.symlink(outside / "rules", cfg / "rules")
+    (cfg / "projects").mkdir()
+    proj = tmp_path / "work" / "atlas"
+    w(proj / "AGENTS.md", "# Atlas\nAtlas deploys on Thursdays.\n")
+    os.symlink(outside / "hostname.md", proj / "CLAUDE.md")
+    w(cfg / "projects" / enc(proj) / "memory" / "MEMORY.md", "- A plain bullet about Redis on 6380\n")
+    os.symlink(outside / "hostname.md", cfg / "projects" / enc(proj) / "memory" / "link.md")
+    res = import_core.run_import(str(cfg), tmp_path / "t.db", apply=True, backup=False,
+                                 )
+    bad = {e["origin"] for e in res["entries"] if e["outcome"] == "unreadable"}
+    assert "user-instructions/rules/" in bad and any(o.endswith("link.md") for o in bad)
+    assert not any("Zorblax" in n["content"] or "Quillon" in n["content"] for n in notes(tmp_path / "t.db"))
+
+
+def _linked_world(tmp_path):
+    """A secret-bearing 'outside' tree that links must never lead to, and a config folder + project to put links in."""
+    outside = tmp_path / "outside"
+    w(outside / "CLAUDE.md", "# Secrets\nZorblax backup runs at 03:00 on node seven.\n")
+    w(outside / "rules" / "r.md", "# Rule\nQuillon reports are due on Fridays.\n")
+    memory_folder(outside / "agent-memory" / "helper", "outside")
+    w(outside / "projects" / "-x" / "memory" / "MEMORY.md", "- Plinth rota is on Mondays\n")
+    cfg = tmp_path / "cfg"
+    w(cfg / "settings.json", "{}")
+    w(cfg / "CLAUDE.md", "# Prefs\nAnswer briefly.\n")
+    proj = tmp_path / "work" / "atlas"
+    w(proj / "AGENTS.md", "# Atlas\nAtlas deploys on Thursdays.\n")
+    (cfg / "projects").mkdir()
+    w(cfg / "projects" / enc(proj) / "memory" / "MEMORY.md", "- A plain bullet about Redis on 6380\n")
+    return outside, cfg, proj
+
+
+def _import_unreadable(cfg, tmp_path):
+    res = import_core.run_import(str(cfg), tmp_path / "t.db", apply=True, backup=False)
+    bad = {e["origin"]: e["reason"] for e in res["entries"] if e["outcome"] == "unreadable"}
+    text = " ".join(n["content"] for n in notes(tmp_path / "t.db"))
+    return bad, text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_a_projects_folder_that_is_a_link_is_reported_not_followed(tmp_path):
+    outside, cfg, proj = _linked_world(tmp_path)
+    import shutil
+    shutil.rmtree(cfg / "projects")
+    os.symlink(outside / "projects", cfg / "projects")
+    bad, text = _import_unreadable(cfg, tmp_path)
+    assert "projects/" in bad and "symbolic link" in bad["projects/"]
+    assert "Plinth" not in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_a_project_dot_claude_folder_that_is_a_link_is_reported_and_nothing_below_it_is_read(tmp_path):
+    outside, cfg, proj = _linked_world(tmp_path)
+    w(outside / "CLAUDE.md", "# Secrets\nZorblax backup runs at 03:00 on node seven.\n")
+    os.symlink(outside, proj / ".claude")                        # outside/ holds CLAUDE.md, rules/ and agent-memory/
+    bad, text = _import_unreadable(cfg, tmp_path)
+    assert any(o.endswith(".claude/") and "symbolic link" in r for o, r in bad.items()), bad
+    assert sum(o.endswith(".claude/") for o in bad) == 1
+    assert "Zorblax" not in text and "Quillon" not in text and "blue-heron-outside" not in text
+    assert "Redis" in text                                        # the real memory folder is still read
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_a_project_agent_memory_folder_that_is_a_link_is_reported_and_not_entered(tmp_path):
+    outside, cfg, proj = _linked_world(tmp_path)
+    (proj / ".claude").mkdir()
+    os.symlink(outside / "agent-memory", proj / ".claude" / "agent-memory")
+    bad, text = _import_unreadable(cfg, tmp_path)
+    assert any(o.startswith("project-agent-memory/") and "symbolic link" in r for o, r in bad.items()), bad
+    assert "blue-heron-outside" not in text and "Redis" in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_a_memory_md_named_as_the_source_is_read_even_when_it_is_a_link(tmp_path):
+    """The user named this very file: following it is the documented rule for every single-file source."""
+    real = tmp_path / "dotfiles" / "claude-memory.md"
+    w(real, "- A plain bullet about Redis on 6380\n- Another bullet about the Zorblax backup at 03:00\n")
+    mem = tmp_path / "mem"
+    mem.mkdir()
+    os.symlink(real, mem / "MEMORY.md")
+    res = import_core.run_import(str(mem / "MEMORY.md"), tmp_path / "t.db", apply=True, backup=False)
+    assert not [e for e in res["entries"] if e["outcome"] == "unreadable"]
+    assert "Redis" in " ".join(n["content"] for n in notes(tmp_path / "t.db")) and res["created"] >= 1

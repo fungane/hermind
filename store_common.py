@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Iterable
 
 try:
-    from .screen import has_text_outside_private, looks_secret, strip_private
+    from .screen import has_text_outside_private, looks_secret, looks_secret_label, strip_private
 except ImportError:
-    from screen import has_text_outside_private, looks_secret, strip_private
+    from screen import has_text_outside_private, looks_secret, looks_secret_label, strip_private
 try:
     from .textnorm import (KINDS, RE_CJK_CHAR, STOP_LATIN, classify_kind, core_text, normalize, numbers,
                            parse_dates, query_time_window, sim_features, slot_values, tokenize, token_weight,
@@ -54,6 +54,7 @@ SCHEMA_VERSION = 5   # 5: review, valid_from, shown_count/opened_count/fb_at (ad
 TOKENIZER_VERSION = "2"  # 2: derivational English suffixes (presentation/present) in textnorm.stem
 # Skip scoring terms whose document frequency exceeds this share of notes (True: CJK unigram, False: other).
 MAX_DF_FRACTION = {True: 0.08, False: 0.4}
+COMMON_FALLBACK_POSTINGS = 2000      # a query of only very common words scores one term over its newest N notes
 
 # Reciprocal-rank-fusion weights per signal (configurable per store / per call). "k" is the RRF constant.
 DEFAULT_WEIGHTS = {"k": 10.0, "bm25": 1.0, "keywords": 0.25, "entity": 0.35, "graph": 0.2, "temporal": 0.5,
@@ -309,6 +310,13 @@ def _set_sim(x: frozenset, y: frozenset) -> tuple[float, float]:
 def default_expiry(kind: str, created_at: float) -> float | None:
     ttl = KIND_TTL_DAYS.get(kind)
     return None if ttl is None else created_at + ttl * DAY
+
+
+def explicit_never_expires(kind) -> bool:
+    """True when a note saved on purpose (CLI remember, memory_remember) named no kind or kind "auto": the text still
+    decides the kind (it drives ranking) but the note gets no expiry. A kind chosen by the caller (chat, news) keeps
+    its time to live."""
+    return str(kind or "").strip().lower() in ("", "auto")
 
 
 def _parse_when(value) -> float | None:

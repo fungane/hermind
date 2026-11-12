@@ -147,3 +147,55 @@ def test_the_markdown_folder_is_readable_by_the_owner_only(tmp_path):
     for p in paths:
         mode = stat.S_IMODE(os.stat(p).st_mode)
         assert mode == (0o700 if p.is_dir() else 0o600), (p, oct(mode))
+
+
+# -- file and folder names with parentheses ------------------------------------------------------------------------------
+
+PAREN = "Atlas (production) uses PostgreSQL for orders."
+
+
+def _paren_db(tmp_path):
+    from store import DecisionStore
+    db = tmp_path / "p.db"
+    s = DecisionStore(str(db))
+    s.add(PAREN, "tech", entities=["Atlas (production)"])
+    s.close()
+    return db
+
+
+@pytest.mark.parametrize("flags", [(), ("--by", "entity")])
+def test_export_with_parentheses_in_names_round_trips_as_one_note(tmp_path, flags):
+    import import_core
+    db = _paren_db(tmp_path)
+    out = tmp_path / "out"
+    by_command(db, out, *flags)
+    indexes = [p for p in out.rglob("index.md")]
+    assert indexes and any("(" in p.read_text(encoding="utf-8").split("](", 1)[-1].split(")", 1)[0] or "<" in p.read_text(encoding="utf-8")
+                           for p in indexes)
+    res = import_core.run_import(str(out), tmp_path / "new.db", apply=True, backup=False)
+    assert res["counts"]["new"] == 1 and sum(res["counts"].values()) == 1, res["counts"]
+    from store import DecisionStore
+    s = DecisionStore(str(tmp_path / "new.db"))
+    try:
+        assert [r[0] for r in s.conn.execute("SELECT content FROM notes")] == [PAREN]
+    finally:
+        s.close()
+
+
+def test_exporter_writes_angle_bracket_targets_for_such_names(tmp_path):
+    db = _paren_db(tmp_path)
+    out = tmp_path / "out"
+    by_command(db, out)
+    text = (out / "tech" / "index.md").read_text(encoding="utf-8")
+    link = next(ln for ln in text.splitlines() if ln.startswith("- [#1]"))
+    name = next(p.name for p in (out / "tech").glob("00001-*.md"))
+    assert "(production)" in name and link.startswith(f"- [#1](<{name}>) ")
+
+
+def test_older_exports_with_unwrapped_parentheses_are_still_index_files():
+    import md_notes
+    old = ("# tech\n\n1 notes\n\n- [#1](00001-Atlas-(production)-uses-PostgreSQL.md) tech · 2026-01-02 · active — "
+           "Atlas (production) uses PostgreSQL\n")
+    new = old.replace("](00001-Atlas-(production)-uses-PostgreSQL.md)", "](<00001-Atlas-(production)-uses-PostgreSQL.md>)")
+    assert md_notes.is_export_index(old) and md_notes.is_export_index(new)
+    assert not md_notes.is_export_index(old + "\nA note of mine.\n")

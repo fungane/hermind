@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import backfill_aliases as bf  # noqa: E402
-from store import DecisionStore  # noqa: E402
+from store import DecisionStore, RefusedWrite  # noqa: E402
 from textnorm import numbers  # noqa: E402
 
 PROMPT = """You maintain a personal long-term memory. Below are notes about one topic ("{entity}"), oldest first, each
@@ -121,7 +121,7 @@ def run(cfg, out=None) -> dict:
     out = out or sys.stdout
     cfg.concurrency = max(1, min(2, int(cfg.concurrency)))
     store = DecisionStore(cfg.db)
-    stats = {"entities": 0, "written": 0, "empty": 0, "failed": 0, "dry_run": cfg.dry_run}
+    stats = {"entities": 0, "written": 0, "empty": 0, "failed": 0, "refused": 0, "dry_run": cfg.dry_run}
     try:
         if cfg.entities:
             targets = [(e.strip(), 0) for e in cfg.entities.split(",") if e.strip()]
@@ -141,7 +141,13 @@ def run(cfg, out=None) -> dict:
                 bf.log_event(out, event="empty", entity=entity)
             else:
                 if not cfg.dry_run:
-                    store.replace_summaries(entity, items)
+                    try:
+                        store.replace_summaries(entity, items)
+                    except RefusedWrite as exc:          # the whole replace rolled back: the entity keeps its old summaries
+                        stats["refused"] += 1
+                        bf.log_event(out, event="refused", entity=entity, error=str(exc)[:200])
+                        print(f"skipped entity {entity!r}: {str(exc)[:120]}", file=sys.stderr)
+                        return
                     stats["written"] += len(items)
                 bf.log_event(out, event="done" if not cfg.dry_run else "preview", entity=entity, model=model,
                              summaries=[t for t, _ in items])

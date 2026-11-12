@@ -48,8 +48,9 @@ What does not work well yet, and what to keep in mind.
   `integrity_check` ok). Cost grows faster than the note count (8,000 notes: about 3 s), so nightly runs on an already
   consolidated database are cheap, but a first run over a very large import is not. `consolidate()` takes a `time_budget`
   and continues on the next call; the automatic run at session start (`maintenance()`) uses 10 seconds, so a large import is
-  consolidated over several sessions instead of holding one up. A search using only very common words took 0.3 to 0.5 s at
-  100,000 notes; searches with distinctive words took 10 to 25 ms. Real notes will differ: treat these as orders of
+  consolidated over several sessions instead of holding one up. A search using only very common words (every word in more than
+  40 % of the notes) scores just the rarest of them over its 2,000 newest notes, so it answers in about 25 ms at 50,000 notes but
+  finds only recent notes; the duplicate check before a write skips this fallback. Searches with distinctive words took 10 to 25 ms. Real notes will differ: treat these as orders of
   magnitude.
 - Consolidation ignores words that appear in more than 300 notes when looking for near-duplicates, so a note made only of very
   common words may not be folded into its twin (about 0.5 % of planted duplicates in the test above). Nothing is lost; both

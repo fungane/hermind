@@ -319,3 +319,215 @@ def test_review_guard_holds_even_if_the_tool_were_listed(tmp_path, pkg):
     out = json.loads(srv._run_tool("memory_review", {"action": "confirm", "ids": [1]}))
     assert "only the maintainer" in out["error"]
     srv.close()
+
+
+# -- the secret screen covers tags and entity names -----------------------------------------------------------------
+
+
+def _token() -> str:
+    return "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+
+
+def _rows(store, table):
+    return store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
+def test_secret_in_tags_is_refused_and_nothing_is_stored(store, store_mod):
+    for tags in (_token(), f"backup, {_token()}", ["backup", _token()]):
+        with pytest.raises(store_mod.RefusedWrite):
+            store.add("Zorblax backup runs at 03:00.", kind="decision", tags=tags)
+    assert _rows(store, "notes") == 0 and _rows(store, "entities") == 0
+
+
+def test_secret_in_entity_name_is_refused_and_nothing_is_stored(store, store_mod):
+    for ents in ([_token()], ["Zorblax", f"{_token()}=alias"], [f"Zorblax={_token()}"]):
+        with pytest.raises(store_mod.RefusedWrite):
+            store.add("Zorblax backup runs at 03:00.", kind="decision", entities=ents)
+    with pytest.raises(store_mod.RefusedWrite):
+        store.add_entity_aliases("Zorblax", [_token()])
+    assert _rows(store, "notes") == 0 and _rows(store, "entities") == 0
+
+
+def test_secret_in_tags_is_refused_on_set_fields(store, store_mod):
+    nid, _ = store.add("Zorblax backup runs at 03:00.", kind="decision", tags="backup")
+    with pytest.raises(store_mod.RefusedWrite):
+        store.set_fields(nid, tags=_token())
+    assert store.get(nid)["tags"] == "backup"
+
+
+def test_ordinary_tags_and_entities_still_work(store):
+    nid, created = store.add("Zorblax backup runs at 03:00.", kind="decision", tags="backup, nightly",
+                             entities=["Zorblax", "Nightly Job=nj|night job"])
+    assert created and store.get(nid)["tags"] == "backup nightly"
+    assert [h["id"] for h in store.search("Zorblax")] == [nid]
+
+
+def test_plugin_remember_refuses_secret_tags_and_entities(provider):
+    for extra in ({"tags": _token()}, {"entities": [_token()]}):
+        out = json.loads(provider.handle_tool_call(
+            "memory_remember", {"content": "Zorblax backup runs at 03:00.", "kind": "decision", **extra}))
+        assert out.get("refused") and "refused" in out["error"]
+    assert _rows(provider._store, "notes") == 0
+
+
+def test_audit_db_flags_secret_in_tags_and_entity_names(tmp_path):
+    sys.path.insert(0, str(ROOT))
+    from store import DecisionStore
+    db = str(tmp_path / "t.db")
+    s = DecisionStore(db)
+    a, _ = s.add("Zorblax backup runs at 03:00.", kind="decision", tags="backup")
+    b, _ = s.add("Quillon reports are due on Fridays.", kind="decision", entities=["Quillon"])
+    c, _ = s.add("An ordinary note about the Plinth rota.", kind="decision", entities=["Plinth"])
+    s.close()
+    con = sqlite3.connect(db)                       # a database that already holds such rows (written by an older version)
+    con.execute("UPDATE notes SET tags=? WHERE id=?", (_token(), a))
+    con.execute("UPDATE entities SET name=? WHERE key='quillon'", (_token(),))
+    con.commit()
+    con.close()
+    r = _cli("audit-db", "--db", db, "--json", home=tmp_path)
+    d = json.loads(r.stdout)
+    assert d["flagged"] == 1 and [f["id"] for f in d["findings"]] == [a]            # the note whose own tags hold the token
+    assert all("credential" in f["found"] and "excerpt" not in f for f in d["findings"])
+    assert d["entities_flagged"] == 1 and d["entity_findings"][0]["where"] == ["name"]   # the entity is its own finding
+    assert _token() not in r.stdout
+
+
+def test_audit_db_reports_a_truncated_or_foreign_database_in_one_line(tmp_path):
+    sys.path.insert(0, str(ROOT))
+    from store import DecisionStore
+    db = tmp_path / "t.db"
+    s = DecisionStore(str(db))
+    for i in range(300):
+        s.add(f"Zorblax note {i} about backups and nodes", kind="tech")
+    s.close()
+    data = db.read_bytes()
+    trunc = tmp_path / "trunc.db"
+    trunc.write_bytes(data[:len(data) // 2])
+    foreign = tmp_path / "foreign.db"
+    con = sqlite3.connect(foreign)
+    con.execute("CREATE TABLE other(x)")
+    con.commit()
+    con.close()
+    for path in (trunc, foreign):
+        r = _cli("audit-db", "--db", str(path), home=tmp_path)
+        assert r.returncode == 2 and "Traceback" not in r.stderr and r.stderr == ""
+        assert r.stdout.startswith("ERROR: cannot read ") and len(r.stdout.strip().splitlines()) == 1
+        j = _cli("audit-db", "--db", str(path), "--json", home=tmp_path)
+        d = json.loads(j.stdout)
+        assert j.returncode == 2 and d["ok"] is False and d["error"].startswith("cannot read ") and "Traceback" not in j.stderr
+
+
+def _pending_db(tmp_path, n=3):
+    sys.path.insert(0, str(ROOT))
+    from store import DecisionStore
+    db = str(tmp_path / "r.db")
+    s = DecisionStore(db)
+    ids = [s.add(f"Agent note {i} about the Zorblax rota and node {i}.", "decision", review="pending")[0] for i in range(1, n + 1)]
+    s.close()
+    return db, ids
+
+
+@pytest.mark.parametrize("bad", ["-2", "1-3", "1abc", "0", "1.5", "all2", "99999999999999999999999", "2;3", "-1,2"])
+def test_review_rejects_ids_that_are_not_positive_whole_numbers_and_changes_nothing(tmp_path, bad):
+    db, ids = _pending_db(tmp_path)
+    for flag in ("--confirm", "--reject", "--restore"):
+        r = _cli("review", "--db", db, f"{flag}={bad}", "--json", home=tmp_path)
+        d = json.loads(r.stdout)
+        assert r.returncode == 2 and d["ok"] is False and "is not a note id" in d["error"], (flag, bad, r.stdout)
+        assert "Traceback" not in r.stderr
+    assert _count(db, "SELECT COUNT(*) FROM notes WHERE review='pending'") == 3
+    # a bad second flag stops the first one from running too
+    r = _cli("review", "--db", db, "--confirm", "1", f"--reject={bad}", "--json", home=tmp_path)
+    assert r.returncode == 2 and _count(db, "SELECT COUNT(*) FROM notes WHERE review='pending'") == 3
+
+
+@pytest.mark.parametrize("good,expected", [("1", [1]), ("#1", [1]), ("1,2", [1, 2]), ("1 2", [1, 2]), ("#1, #3", [1, 3]),
+                                           (" 2 ,3 ", [2, 3])])
+def test_review_accepts_comma_and_space_separated_ids(tmp_path, good, expected):
+    db, ids = _pending_db(tmp_path)
+    d = json.loads(_cli("review", "--db", db, "--confirm", good, "--json", home=tmp_path).stdout)
+    assert d["ok"] and d["confirm"]["done"] == [ids[i - 1] for i in expected]
+
+
+def test_review_all_is_still_a_keyword(tmp_path):
+    db, ids = _pending_db(tmp_path)
+    d = json.loads(_cli("review", "--db", db, "--confirm", "all", "--json", home=tmp_path).stdout)
+    assert d["confirm"]["done"] == ids and d["pending_count"] == 0
+
+
+# -- round 2: labels are screened one by one, not as prose -----------------------------------------------------------
+
+
+def test_ordinary_labels_with_credential_words_are_not_refused(store):
+    """Joining labels with a newline let "token" + newline + "issue-1234-followup" read as "token = value"."""
+    cases = [
+        dict(tags=["token", "issue-1234-followup"], entities=["Secret", "ISO27001-2022"]),
+        dict(tags="password: rotation-policy-2026", entities=["access token", "Wasabi-S3-2024"]),
+        dict(tags=["password: rotation-policy-2026"], entities=["Refresh Token=refresh_token|RT2"]),
+        dict(tags="secret key-rotation", entities=["bot token=TELEGRAM_BOT_TOKEN|tg-bot-token-v2"]),
+        dict(tags="quarterly-infrastructure-review-2026-q3-planning", entities=["API key=OPENAI_API_KEY|apikey2"]),
+        dict(tags="x", entities=["password=passwd|1Password"]),
+    ]
+    for i, kw in enumerate(cases):
+        nid, created = store.add(f"Zorblax rotation case {i} runs at 03:{i:02d}.", kind="decision", **kw)
+        assert created and nid
+
+
+def test_hashes_and_ids_as_labels_are_not_refused(store):
+    # a commit SHA, an MD5 digest, a UUID and a build version are ordinary labels (note text allows them too)
+    sha = "926da08f" + "592f8fbe" + "da2cf8f8" + "0b4f83a6" + "1f8c014c"
+    md5 = "9e107d9d" + "372bb682" + "6bd81d35" + "42a419d6"
+    for kw in (dict(tags=sha), dict(entities=[sha]), dict(entities=[f"Release={sha}|{md5}"]),
+               dict(tags=["3f2b8c1e-9a4d-4e7b-b6c2-1d5e8f0a7c34", "v1.0.0-rc.1+build.20261112"])):
+        nid, created = store.add(f"Zorblax release notes {len(str(kw))}", kind="tech", **kw)
+        assert created and nid
+
+
+def test_token_shaped_labels_are_still_refused_in_every_position(store, store_mod):
+    t = _token()
+    for kw in (dict(tags=t), dict(tags=["ok", t]), dict(tags=f"ok,{t}"), dict(entities=[t]), dict(entities=[f"Zorblax={t}"]),
+               dict(entities=[f"Zorblax=fine|{t}"]), dict(entities=[f"token={t}"]), dict(entities=[("Zorblax", [t])]),
+               dict(entities=["Zorblax=ok|" + "sk-" + "A1b2C3d4E5" * 3]), dict(tags="AKIA" + "ABCDEFGHIJKLMNOP"),
+               dict(tags="-----BEGIN PRIVATE " + "KEY-----"), dict(tags="a1B2" * 10 + "Zz9")):   # last: a long mixed random token
+        with pytest.raises(store_mod.RefusedWrite):
+            store.add("Zorblax backup runs at 03:00.", kind="decision", **kw)
+    with pytest.raises(store_mod.RefusedWrite):
+        store.add_entity_aliases("Zorblax", ["ok", t])
+    assert _rows(store, "notes") == 0 and _rows(store, "entities") == 0
+
+
+def test_plugin_drops_a_model_extracted_entity_that_looks_like_a_secret_and_stores_the_note(provider):
+    import types
+    provider._llm = types.SimpleNamespace(extract_entities=lambda c: [_token(), "Zorblax", f"Zorblax={_token()}"])
+    out = json.loads(provider.handle_tool_call("memory_remember", {"content": "Zorblax backup runs at 03:00.", "kind": "decision"}))
+    assert out.get("created") is True and "error" not in out
+    names = [r[0] for r in provider._store.conn.execute("SELECT name FROM entities")]
+    assert "Zorblax" in names and not any("ghp" in n or "gh" + "p_" in n for n in names)
+    assert _token() not in json.dumps(out)
+    # the caller's own entities are still refused
+    out = json.loads(provider.handle_tool_call("memory_remember", {"content": "Quillon runs at 04:00.", "kind": "decision", "entities": [_token()]}))
+    assert out.get("refused")
+
+
+def test_audit_db_reports_entities_on_their_own(tmp_path):
+    sys.path.insert(0, str(ROOT))
+    from store import DecisionStore
+    db = str(tmp_path / "e.db")
+    s = DecisionStore(db)
+    a, _ = s.add("Quillon reports are due on Fridays.", kind="decision", entities=["Quillon=qr|quill"])
+    s.add("Plinth rota is on Mondays.", kind="decision", entities=["Plinth"])
+    s.close()
+    con = sqlite3.connect(db)
+    con.execute("UPDATE entities SET aliases=? WHERE key='quillon'", (f"qr|{_token()}",))     # written by raw SQL
+    con.commit()
+    con.close()
+    r = _cli("audit-db", "--db", db, "--json", home=tmp_path)
+    d = json.loads(r.stdout)
+    assert r.returncode == 0 and d["flagged"] == 0 and d["findings"] == []                    # the note mentions the entity: not flagged
+    assert d["entities_scanned"] == 2 and d["entities_flagged"] == 1
+    e = d["entity_findings"][0]
+    assert e["where"] == ["alias 2"] and isinstance(e["entity_id"], int) and "name" not in e
+    assert _token() not in r.stdout and "UPDATE entities SET aliases=''" in d["entity_advice"]
+    t = _cli("audit-db", "--db", db, home=tmp_path).stdout
+    assert "ENTITY #" in t and _token() not in t and "0 flagged" in t.splitlines()[0]
+    assert _cli("audit-db", "--db", db, "--fail-on-findings", home=tmp_path).returncode == 1

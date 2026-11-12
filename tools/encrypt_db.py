@@ -31,8 +31,13 @@ import dbdriver  # noqa: E402
 
 def generate_key_file(path: Path) -> None:
     path = path.expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)      # O_EXCL: never overwrite an existing key
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)      # O_EXCL: never overwrite an existing key
+    except FileExistsError:
+        raise SystemExit(f"{path} already exists; an existing key file is never overwritten (choose another path)") from None
+    except OSError as exc:
+        raise SystemExit(f"cannot write {path}: {exc.strerror or exc}") from None
     with os.fdopen(fd, "w") as fh:
         fh.write(secrets.token_hex(32) + "\n")
     print(f"wrote {path} (mode 600). Back it up somewhere else; without it the encrypted notes cannot be read.")

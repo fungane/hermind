@@ -364,3 +364,20 @@ def test_set_fields_validation(store):
         store.set_fields(nid, valid_to="2025-01-01")             # before valid_from
     assert store.set_fields(nid, valid_from=None) is True and store.get(nid)["valid_from"] is None
     assert store.set_fields(99999, tags="x") is False
+
+
+def test_edit_back_with_a_credential_like_tag_is_refused_in_preview_and_changes_nothing_on_apply(tools, env, store_mod):
+    """Round 2: a changed body plus a bad tag used to update the text first and then fail on the tag."""
+    db, out, ids = env
+    _export(tools, db, out)
+    f = _file(out, ids["a"])
+    text = f.read_text(encoding="utf-8").replace('tags: ["ops"]', 'tags: ["ops", "gh' + 'p_' + 'a1B2c3D4' * 5 + '"]')
+    assert "ghp" not in text.replace("gh" + "p_", "")                       # the edit really happened
+    f.write_text(text.replace("Zorblax 備份每日 03:00 執行", "Zorblax 備份每日 05:30 執行"), encoding="utf-8")
+    before = _state(store_mod, db)
+    code, preview = _import(tools, db, out)
+    assert code == 1 and "refused" in preview and "05:30" not in preview
+    code, text = _import(tools, db, out, "--apply")
+    assert code == 1 and "refused" in text
+    assert _state(store_mod, db) == before                                  # neither the text nor the tags moved
+    assert "05:30" not in f.read_text(encoding="utf-8").split("---\n", 2)[1]

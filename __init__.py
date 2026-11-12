@@ -47,17 +47,45 @@ try:
                          strip_private, write_flag)
     from .pii import find_pii as _find_pii
     from .store import KINDS, LEARN_WINDOW_SECONDS, PENDING_WEIGHT, DecisionStore, RefusedWrite, day_bounds, l0
-    from .store_common import default_db_file
+    from .store_common import default_db_file, explicit_never_expires
+    from .store_writes import clean_entities
     from .textnorm import classify_kind, topical_weight
 except ImportError:  # loaded as a top-level module (e.g. pytest collecting the plugin dir)
     from screen import (CONTEXT_TAG, clean_prompt, has_text_outside_private, looks_masked_secret, looks_secret, strip_injected,
                         strip_private, write_flag)
     from pii import find_pii as _find_pii
     from store import KINDS, LEARN_WINDOW_SECONDS, PENDING_WEIGHT, DecisionStore, RefusedWrite, day_bounds, l0
-    from store_common import default_db_file
+    from store_common import default_db_file, explicit_never_expires
+    from store_writes import clean_entities
     from textnorm import classify_kind, topical_weight
 
 logger = logging.getLogger(__name__)
+
+_SQLITE_INT = 2 ** 63
+
+
+def _as_text(value) -> str:
+    """What a hook argument says as text: a str as it is, anything else (None, a number, a list, bytes ...) as nothing. The
+    host passes strings; a caller that does not must not break the agent loop or leave a note made of "5"."""
+    return value if isinstance(value, str) else ""
+
+
+def _dict_list(messages) -> list:
+    """The dict items of a list of messages ([] for anything that is not a list or tuple)."""
+    return [m for m in messages if isinstance(m, dict)] if isinstance(messages, (list, tuple)) else []
+
+
+def _int_arg(value, name: str) -> int:
+    """A whole-number tool argument as an int that SQLite can hold; ValueError (a tool error, never a traceback) otherwise."""
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be a whole number") from None
+    if not -_SQLITE_INT <= n < _SQLITE_INT:
+        raise ValueError(f"{name} is out of range: use a whole number between {-_SQLITE_INT} and {_SQLITE_INT - 1}")
+    return n
 
 _DEFAULT_DB_PATH = "$HERMES_HOME/hermind.db"   # an existing decision_memory.db is picked up instead, see _db_path
 _CONFIG_KEY = "hermind"
@@ -100,7 +128,8 @@ REMEMBER_SCHEMA = {
         "topic words. Do not repeat words already in content.\n"
         "kind: decision (agreed conclusion / chosen plan), preference (how the user likes things), tech (setup, "
         "config, fixes), state (a dated status such as 'VPS has 3.7GB RAM free' - newer states supersede older ones), "
-        "news (time-sensitive, expires in 14 days), chat (anything else, expires in 90 days), or auto.\n"
+        "news (time-sensitive, expires in 14 days when you choose it), chat (anything else, expires in 90 days when you "
+        "choose it), or auto (the text decides; a note you save with kind auto or no kind never expires).\n"
         "entities: the main names involved (products, hosts, people, projects); 'name=alias1|alias2' adds aliases "
         "such as a Cantonese nickname."
     ),
@@ -410,6 +439,7 @@ class HermindProvider(MemoryProvider):
         self._platform = ""
         self._lock = threading.RLock()
         self._last_count: int | None = None
+        self._prefetch_warned: set[str] = set()      # error classes of a failed recall already logged at WARNING
         self._llm = None
         self._vec = None
         self._pool = None          # single background worker for LLM fact extraction (never blocks the reply)
@@ -623,6 +653,19 @@ class HermindProvider(MemoryProvider):
         return self._store.maintenance() if self._store else 0
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        try:
+            return self._prefetch(_as_text(query))
+        except Exception as exc:          # a recall problem must never break the prompt
+            name = type(exc).__name__
+            if name not in self._prefetch_warned:       # once per kind of failure, with the traceback; then quiet
+                self._prefetch_warned.add(name)
+                logger.warning("hermind prefetch failed (%s); further failures of this kind are logged at debug level", name, exc_info=True)
+            else:
+                logger.debug("hermind prefetch failed: %s", name)
+            self._last_count = 0
+            return ""
+
+    def _prefetch(self, query: str) -> str:
         self._last_count = 0
         query = strip_private(clean_prompt(query))[0].replace("[REDACTED]", " ")   # notices, markers, <private> spans: not searched
         query = " ".join(query.split())
@@ -797,20 +840,22 @@ class HermindProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", messages=None,
                   turn_author: dict | None = None) -> None:
-        if not self._capturing():
-            return
-        if session_id and self._is_skipped_source(session_id):
-            return
-        if turn_author and turn_author.get("is_bot"):
-            return
         try:
-            self._capture(user_content, assistant_content, session_id)
+            if not self._capturing():
+                return
+            session_id = _as_text(session_id)
+            if session_id and self._is_skipped_source(session_id):
+                return
+            if isinstance(turn_author, dict) and turn_author.get("is_bot"):
+                return
+            self._capture(_as_text(user_content), _as_text(assistant_content), session_id)
         except Exception as exc:
             logger.debug("hermind sync_turn failed: %s", exc)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Capture the final user/assistant exchange if sync_turn has not already (dedup makes this idempotent)."""
-        if not self._capturing() or not messages:
+        messages = _dict_list(messages)
+        if not messages or not self._capturing():
             return
         user = assistant = ""
         for msg in reversed(messages):
@@ -832,9 +877,17 @@ class HermindProvider(MemoryProvider):
     # -- compression / built-in memory mirror -------------------------------------------------------------------
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        try:
+            return self._pre_compress(messages)
+        except Exception as exc:          # compression must never fail because of this hook
+            logger.debug("hermind on_pre_compress failed: %s", exc)
+            return ""
+
+    def _pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Rule-based pickup of decision / tech / state sentences from the messages about to be compressed. They are
         stored as kind=chat *candidate* notes (expire like chat, rank slightly lower) and listed in the returned
         string so the compressor keeps them in the summary."""
+        messages = _dict_list(messages)
         if not messages or not _truthy(self._config.get("precompress_capture", True)):
             return ""
         found = None
@@ -866,11 +919,12 @@ class HermindProvider(MemoryProvider):
         """Mirror built-in MEMORY.md / USER.md writes as pinned notes (user -> preference, memory -> state)."""
         if self._store is None or not self._writable or not _truthy(self._config.get("mirror_builtin", True)):
             return
-        metadata = metadata or {}
+        action, target, content = _as_text(action), _as_text(target), _as_text(content)
+        metadata = metadata if isinstance(metadata, dict) else {}
         src = f"builtin:{target or 'memory'}"
-        kind = "preference" if (target or "").lower() == "user" else "state"
-        content = strip_injected(content or "")
-        prev = strip_injected(str(metadata.get("previous_content") or metadata.get("old_text") or ""))
+        kind = "preference" if target.lower() == "user" else "state"
+        content = strip_injected(content)
+        prev = strip_injected(_as_text(metadata.get("previous_content") or metadata.get("old_text") or ""))
         try:
             with self._lock:
                 old = self._store.find_by_content(prev, source_session=src) if prev else None
@@ -899,12 +953,15 @@ class HermindProvider(MemoryProvider):
                     "memory_related": self._related, "memory_update": self._update,
                     "memory_feedback": self._feedback, "memory_get": self._get,
                     "memory_review": self._review}
-        if tool_name not in handlers:
-            return tool_error(f"Unknown tool: {tool_name}")
+        if not isinstance(tool_name, str) or tool_name not in handlers:
+            return tool_error(f"Unknown tool: {_as_text(tool_name)[:60] or type(tool_name).__name__}")
+        if args and not isinstance(args, dict):
+            return tool_error(f"{tool_name}: arguments must be an object (name: value pairs), not {type(args).__name__}")
+        args = args or {}
         if self._store is None:
             return tool_error("hermind is not initialised")
         if (tool_name in ("memory_remember", "memory_forget", "memory_update", "memory_feedback")
-                or (tool_name == "memory_review" and str((args or {}).get("action") or "list").lower() != "list")) \
+                or (tool_name == "memory_review" and str(args.get("action") or "list").lower() != "list")) \
                 and not self._writable:
             return tool_error("hermind is read-only in this context (subagent/cron/flush)")
         try:
@@ -914,9 +971,12 @@ class HermindProvider(MemoryProvider):
             return json.dumps({"error": str(exc), "refused": True})
         except (KeyError, ValueError, TypeError) as exc:
             return tool_error(str(exc))
-        except (sqlite3.Error, OverflowError) as exc:   # e.g. an argument of the wrong type reaching SQL: never raise into the agent loop
-            logger.warning("hermind %s failed: %s", tool_name, type(exc).__name__)
-            return tool_error(f"{tool_name} failed ({type(exc).__name__}); check the argument types")
+        except Exception as exc:   # e.g. an argument of the wrong type reaching SQL or a string method: never raise into the agent loop
+            logger.warning("hermind %s failed: %s", tool_name, type(exc).__name__, exc_info=True)
+            if isinstance(exc, (TypeError, ValueError, KeyError, OverflowError)):
+                return tool_error(f"{tool_name} failed ({type(exc).__name__}); check the argument types")
+            return tool_error(f"{tool_name} failed ({type(exc).__name__}): not a problem with the arguments; see the log, "
+                              "and run `hermind doctor` if it keeps happening")
 
     def _remember(self, a: dict) -> str:
         content = str(a.get("content") or "").strip()
@@ -935,7 +995,7 @@ class HermindProvider(MemoryProvider):
             ents = [e for e in ents.replace("，", ",").split(",")]
         ents = [str(e).strip() for e in ents if str(e).strip()]
         if not ents and self._llm is not None:
-            ents = self._llm.extract_entities(content) or []
+            ents = clean_entities(self._llm.extract_entities(content) or [])   # the model's output never refuses the note
         check = self._store.write_check(content, ents)
         pinned = _truthy(a.get("pinned", False))
         hold = self._hold_reason(content, keywords, pinned)
@@ -943,6 +1003,8 @@ class HermindProvider(MemoryProvider):
             pinned = False                                   # an agent's note never enters the core block unreviewed
         nid, created = self._store.add(content, kind=str(a.get("kind") or "decision"), keywords=keywords,
                                        source_session=self._session_id, pinned=pinned,
+                                       never_expires=explicit_never_expires(a.get("kind")),
+                                       reset_expiry=not self._config.get("remember_review"),   # an untrusted writer (MCP without --trust-writes) never changes an existing note's expiry
                                        entities=ents, tags=str(a.get("tags") or ""),
                                        review="pending" if hold else "active",
                                        valid_from=a.get("valid_from") or None, valid_to=a.get("valid_to") or None)
@@ -1112,7 +1174,7 @@ class HermindProvider(MemoryProvider):
             logger.debug("hermind learning failed: %s", exc)
 
     def _get(self, a: dict) -> str:
-        nid = int(a["id"])
+        nid = _int_arg(a["id"], "id")
         note = self._store.get(nid)
         if note is None:
             return tool_error(f"no note #{nid}. Do not guess ids; find it with memory_search first.")
@@ -1167,7 +1229,7 @@ class HermindProvider(MemoryProvider):
         return json.dumps(res, ensure_ascii=False)
 
     def _update(self, a: dict) -> str:
-        nid = int(a["id"])
+        nid = _int_arg(a["id"], "id")
         content = str(a.get("content") or "").strip()
         if not content:
             return tool_error("content is required")
@@ -1205,7 +1267,7 @@ class HermindProvider(MemoryProvider):
         return write_flag(content, keywords, pinned, kinds)
 
     def _feedback(self, a: dict) -> str:
-        nid = int(a["id"])
+        nid = _int_arg(a["id"], "id")
         trust = self._store.feedback(nid, _truthy(a.get("helpful")))
         if trust is None:
             return tool_error(f"no note #{nid}")
@@ -1214,7 +1276,7 @@ class HermindProvider(MemoryProvider):
         return json.dumps({"id": nid, "trust": trust, "hidden": trust < 0.2})
 
     def _forget(self, a: dict) -> str:
-        nid = int(a["id"])
+        nid = _int_arg(a["id"], "id")
         return json.dumps({"id": nid, "deleted": self._store.forget(nid)})
 
     def _review(self, a: dict) -> str:
@@ -1236,7 +1298,7 @@ class HermindProvider(MemoryProvider):
         ids = a.get("ids") if a.get("ids") is not None else ([a["id"]] if a.get("id") is not None else [])
         if isinstance(ids, (int, str)):
             ids = [ids]
-        ids = [int(i) for i in ids]
+        ids = [_int_arg(i, "ids") for i in ids]
         if not ids:
             return tool_error("id or ids is required")
         res = self._store.review_many(action, ids[:50])
@@ -1247,7 +1309,7 @@ class HermindProvider(MemoryProvider):
         return json.dumps(res, ensure_ascii=False)
 
     def _list(self, a: dict) -> str:
-        notes = self._store.list(kind=a.get("kind") or None, limit=int(a.get("limit") or 20))
+        notes = self._store.list(kind=a.get("kind") or None, limit=_int_arg(a.get("limit") or 20, "limit"))
         return json.dumps({"results": [_public(n) for n in notes], "count": len(notes)}, ensure_ascii=False)
 
 

@@ -37,6 +37,29 @@ NAMED_FILES = 20                   # files of the export's top folder a remark n
 
 # -- a source: a ZIP read in place, or a folder -----------------------------------------------------------------------
 
+SYMLINK = "symbolic link: not followed"
+
+
+def _member_name(filename: str) -> str:
+    """The name a ZIP member is looked up by: leading ``./`` removed (repeatedly, so ``.//x`` and ``././x`` too)."""
+    name = filename
+    while name.startswith("./"):
+        name = name[2:]
+    return name
+
+
+def _unsafe_member(info: zipfile.ZipInfo) -> str:
+    """Why a ZIP member is never read ("" when it is fine): a symbolic link, or a name that is empty, absolute or climbs
+    out of the archive with .. (the names are only looked up, nothing is extracted, but no reader should see them).
+    The name is normalised first (``./`` stripped), then checked, so ``.//etc/x`` is as absolute as ``/etc/x``."""
+    if (info.external_attr >> 16) & 0o170000 == 0o120000:
+        return SYMLINK
+    name = _member_name(info.filename).replace("\\", "/")
+    if not name or name.startswith("/") or re.match(r"^[A-Za-z]:", name) or ".." in name.split("/"):
+        return "unsafe name: empty, absolute or containing .. (refused)"
+    return ""
+
+
 class ExportSource:
     """The files of an export, by name (posix paths below its root). Reads on demand; never extracts anything."""
 
@@ -45,11 +68,18 @@ class ExportSource:
         self.zf: zipfile.ZipFile | None = None
         self.sizes: dict[str, int] = {}
         self.members: dict[str, str] = {}     # name as listed -> the member name inside the ZIP (a leading ./ dropped)
+        self.refused: list[tuple[str, str]] = []   # (name, reason): entries that are never read (links, unsafe ZIP names)
         if path.is_dir():
             for dirpath, dirnames, filenames in os.walk(path):
-                dirnames.sort()
+                for d in dirnames:                 # a symbolic link to a folder is not followed
+                    if (Path(dirpath) / d).is_symlink():
+                        self.refused.append(((Path(dirpath) / d).relative_to(path).as_posix() + "/", SYMLINK))
+                dirnames[:] = sorted(d for d in dirnames if not (Path(dirpath) / d).is_symlink())
                 for name in sorted(filenames):
                     full = Path(dirpath) / name
+                    if full.is_symlink():          # nor is a symbolic link to a file
+                        self.refused.append((full.relative_to(path).as_posix(), SYMLINK))
+                        continue
                     try:
                         size = full.stat().st_size
                     except OSError:
@@ -59,9 +89,11 @@ class ExportSource:
             self.zf = zipfile.ZipFile(path)
             for info in self.zf.infolist():
                 if not info.is_dir():
-                    name = info.filename
-                    while name.startswith("./"):
-                        name = name[2:]
+                    why = _unsafe_member(info)
+                    if why:
+                        self.refused.append((info.filename, why))
+                        continue
+                    name = _member_name(info.filename)
                     self.sizes[name] = info.file_size
                     self.members[name] = info.filename
         else:
@@ -170,6 +202,12 @@ def _plural(n: int, word: str) -> str:
 def _file_remarks(src: ExportSource, read: set[str], never: tuple[str, ...], res: ReadResult) -> None:
     """Account for every file of the export that was not read: the top folder's files by name (an account file marked
     'never opened'), the rest counted by extension."""
+    if src.refused:
+        shown = [f"{n!r}" for n, _ in src.refused[:NAMED_FILES]]
+        reasons = sorted({r for _, r in src.refused})
+        res.remarks.append(f"{_plural(len(src.refused), 'item')} of the export {'was' if len(src.refused) == 1 else 'were'} not read "
+                           f"({'; '.join(reasons)}): " + ", ".join(shown)
+                           + (f", ... ({len(src.refused)} in all)" if len(src.refused) > NAMED_FILES else ""))
     top = [n for n in src.names if n not in read and "/" not in n]
     deep = [n for n in src.names if n not in read and "/" in n]
     if top:

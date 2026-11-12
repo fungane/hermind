@@ -42,7 +42,7 @@ import md_notes as mdnotes  # noqa: E402  (md_notes.py in the repository root)
 import import_core  # noqa: E402
 from import_readers import md_entry  # noqa: E402
 from store import DecisionStore, RefusedWrite  # noqa: E402
-from store_writes import check_text  # noqa: E402
+from store_writes import FORGOTTEN_REFUSAL, check_text, screen_fields  # noqa: E402
 
 
 def _default_db() -> str:
@@ -57,6 +57,17 @@ def find_files(root: Path) -> list[Path]:
 
 
 _day10 = mdnotes.day10
+
+
+def check_update(store: DecisionStore, f: dict, changed) -> None:
+    """The store's refusals for an edited-back note (text, keywords, forgotten text, credential-like tags), raised before
+    anything is written: the plan and the apply step ask the same question, so a refusal leaves the note unchanged."""
+    if "content" in changed or "keywords" in changed:
+        check_text(f["content"], f["keywords"])
+        if store.is_forgotten(f["content"]):
+            raise RefusedWrite(FORGOTTEN_REFUSAL)
+    if "tags" in changed:
+        screen_fields(f["tags"])
 
 
 def plan_file(path: Path, root: Path, store: DecisionStore, seen: set, force: bool, encoding: str | None = None) -> dict:
@@ -103,11 +114,10 @@ def plan_file(path: Path, root: Path, store: DecisionStore, seen: set, force: bo
     if file_rev and file_rev != db_rev and not force:
         return {**item, "action": "conflict", "id": nid, "changed": changed,
                 "why": "edited in the file and changed in the database since the export (--force: file wins)"}
-    if "content" in changed or "keywords" in changed:      # the update would be refused: say so now, not at --apply
-        try:
-            check_text(f["content"], f["keywords"])
-        except (RefusedWrite, ValueError) as exc:
-            return {**item, "action": "refused", "why": str(exc)}
+    try:                                                   # the update would be refused: say so now, not at --apply
+        check_update(store, f, changed)
+    except (RefusedWrite, ValueError) as exc:
+        return {**item, "action": "refused", "why": str(exc)}
     return {**item, "action": "update", "id": nid, "changed": changed, "fields": f, "note": note}
 
 
@@ -115,6 +125,7 @@ def apply_item(store: DecisionStore, item: dict, stamp: bool) -> tuple[str, str]
     """Perform one planned change; returns (outcome, detail)."""
     if item["action"] == "update":
         f, nid, changed = item["fields"], item["id"], item["changed"]
+        check_update(store, f, changed)                    # all refusals first: a refused edit changes nothing
         if "content" in changed or "keywords" in changed:
             store.update(nid, f["content"], f["keywords"])
         meta_kw = {}
@@ -188,7 +199,10 @@ def run(args, out=None) -> int:
     lines = []
     try:
         seen: set = set()
-        items = [plan_file(p, root, store, seen, args.force, args.encoding) for p in find_files(root)]
+        walk = mdnotes.walk_folder(root)
+        items = [plan_file(p, root, store, seen, args.force, args.encoding) for p in walk.notes]
+        items += [{"path": p, "rel": p.relative_to(root).as_posix() + ("/" if p.is_dir() else ""), "action": "skip",
+                   "why": mdnotes.SYMLINK_REASON} for p in walk.links]      # never followed: counted as skipped
         decide_candidates(items, store, args.ignore_file_names)
         for it in items:
             act = it["action"]

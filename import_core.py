@@ -348,7 +348,8 @@ def plan_entry(entry: Entry, reader: str) -> Plan:
     used (an unreadable or inconsistent date, a kind Hermind does not know, a trust outside 0..1) never blocks the text:
     it is dropped and named in ``Plan.notes``."""
     keywords = entry.keywords if isinstance(entry.keywords, str) else " ".join(str(k) for k in entry.keywords)
-    content, keywords = check_text(entry.text, keywords)
+    content, keywords = check_text(entry.text, keywords, tags=[str(t) for t in entry.tags],
+                                    entities=[] if entry.entities is None else list(entry.entities))
     notes: list[str] = []
     created = None
     if entry.created not in (None, ""):

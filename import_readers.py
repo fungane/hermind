@@ -71,6 +71,9 @@ def read_markdown(source: Path, view, encoding: str | None = None, ignore_file_n
         files = walk.notes
         if walk.remark():
             res.remarks.append(walk.remark())
+        for link in walk.links:             # a link is reported (outcome unreadable), never followed
+            res.entries.append(Entry(text="", origin=link.relative_to(root).as_posix() + ("/" if link.is_dir() else ""),
+                                     unreadable=md_notes.SYMLINK_REASON))
     else:
         root, files = source.parent, [source]
     unused: dict[str, int] = {}
@@ -127,7 +130,7 @@ HERMES_FILES = {"MEMORY.MD": ("memory", "state"), "USER.MD": ("user", "preferenc
 
 def _hermes_files(source: Path) -> list[Path]:
     if source.is_dir():
-        return [p for p in sorted(source.iterdir()) if p.is_file() and p.name.upper() in HERMES_FILES]
+        return [p for p in sorted(source.iterdir()) if p.is_file() and not p.is_symlink() and p.name.upper() in HERMES_FILES]
     return [source] if source.name.upper() in HERMES_FILES else []
 
 
@@ -151,7 +154,10 @@ def read_hermes_builtin(source: Path, view) -> ReadResult:
     res = ReadResult()
     files = _hermes_files(source)
     if source.is_dir():
-        others = [p.name for p in sorted(source.iterdir()) if p.is_file() and p not in files]
+        for p in sorted(source.iterdir()):          # a link is reported (outcome unreadable), never followed
+            if p.is_symlink() and p.name.upper() in HERMES_FILES:
+                res.entries.append(Entry(text="", origin=p.name, unreadable=md_notes.SYMLINK_REASON))
+        others = [p.name for p in sorted(source.iterdir()) if p.is_file() and not p.is_symlink() and p not in files]
         if others:
             res.remarks.append(f"{len(others)} other file(s) in the folder were ignored: {', '.join(others[:5])}"
                                f"{', ...' if len(others) > 5 else ''}")

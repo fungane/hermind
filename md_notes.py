@@ -207,6 +207,12 @@ def slug(text: str, limit: int = 40) -> str:
     return s[:limit].strip("-.") or "note"
 
 
+def link_target(target: str) -> str:
+    """A link destination for the index files: <...> when the name has parentheses or spaces (valid Markdown and
+    still read by is_export_index), the name itself otherwise."""
+    return f"<{target}>" if re.search(r"[()\s]", target) else target
+
+
 def render(note: dict, meta: dict) -> str:
     """The text of a note file; *meta* holds the computed values (status, supersedes, outdated_by, created, ...)."""
     f = note_fields(note)
@@ -223,7 +229,9 @@ def render(note: dict, meta: dict) -> str:
 
 
 TEXT_SUFFIXES = (".md", ".markdown", ".mdx", ".txt")      # the files of a folder that are read as notes
-_INDEX_ITEM = re.compile(r"^- \[(?:#\d+|[^\]]+)\]\([^)]*\)( .*)?$")
+# The link target may be <...> (what the exporter writes when a name has parentheses), or a run without spaces that
+# itself contains parentheses (what older exports wrote: file names never hold spaces), or the plain form.
+_INDEX_ITEM = re.compile(r"^- \[(?:#\d+|[^\]]+)\]\((?:<[^<>\n]*>|\S*|[^)\n]*)\)( .*)?$")
 _INDEX_COUNT = re.compile(r"^\d+ notes?$")
 
 
@@ -248,12 +256,17 @@ def is_export_index(text: str) -> bool:
     return all(not ln or _INDEX_ITEM.match(ln) for ln in rest)
 
 
+SYMLINK_REASON = "symbolic link: not followed (a link can lead outside the folder you gave)"
+
+
 class Walk:
     """What a folder holds: the text notes (sorted), the other files counted per extension, and the files inside hidden
-    folders counted per folder name. Hermind's own index.md files are not notes (see is_export_index)."""
+    folders counted per folder name. Hermind's own index.md files are not notes (see is_export_index). Symbolic links
+    (to files or folders) are never followed: they are listed in ``links`` (paths, a folder link with the path of the link)."""
 
     def __init__(self) -> None:
         self.notes: list[Path] = []
+        self.links: list[Path] = []
         self.other: dict[str, int] = {}
         self.hidden: dict[str, int] = {}
         self.indexes = 0                     # index.md files that the Markdown export wrote (passed by)
@@ -278,10 +291,13 @@ class Walk:
 def walk_folder(root: Path) -> Walk:
     """THE function that decides which files of a folder are notes (tools/import_md.py and `hermind import` both call
     it): .md, .markdown, .mdx and .txt files, except an index.md that Hermind's exporter wrote and anything inside a
-    hidden (dot) folder. Everything else is counted, never silently dropped."""
+    hidden (dot) folder. Everything else is counted, never silently dropped. A symbolic link, to a file or to a folder
+    (also a hidden one), is not followed and not a note: it goes to Walk.links."""
     w = Walk()
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
+        w.links += [here / d for d in dirnames if (here / d).is_symlink()]
+        dirnames[:] = [d for d in dirnames if not (here / d).is_symlink()]
         hidden_dirs = sorted(d for d in dirnames if d.startswith("."))
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
         for d in hidden_dirs:
@@ -290,7 +306,9 @@ def walk_folder(root: Path) -> Walk:
                 w.hidden[d] = w.hidden.get(d, 0) + n
         for name in sorted(filenames):
             path = here / name
-            if path.suffix.lower() in TEXT_SUFFIXES:
+            if path.suffix.lower() in TEXT_SUFFIXES and path.is_symlink():
+                w.links.append(path)
+            elif path.suffix.lower() in TEXT_SUFFIXES:
                 if name == "index.md" and _is_export_index_file(path):
                     w.indexes += 1
                 else:
@@ -299,6 +317,7 @@ def walk_folder(root: Path) -> Walk:
                 ext = path.suffix.lower() or "(no extension)"
                 w.other[ext] = w.other.get(ext, 0) + 1
     w.notes.sort()
+    w.links.sort()
     return w
 
 

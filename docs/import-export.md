@@ -117,6 +117,11 @@ by the source's shape; `--from NAME` picks one yourself.
 - **Not taken:** other files are counted in one note under the preview, per extension; files inside hidden folders (`.git`,
   `.obsidian`) are counted per folder; the `index.md` files Hermind's exporter wrote are passed by (an `index.md` you wrote is
   an ordinary note). Unused front matter keys are named with the number of files that had them.
+- **Symbolic links:** a link to a file or to a folder inside the folder you give is never followed, in every reader that
+  walks a folder (Markdown, Claude Code, Hermes built-in memory, unpacked export folders): it is listed as `unreadable`
+  with the reason "symbolic link", and what it points to is not read. A single file you name yourself is read even when it is
+  a link. If a dotfile manager (a stow-style setup) made the files inside the folder links, those files are not read: name the
+  real folder (or the file) as SOURCE instead. ZIP members that are links, or whose names are absolute or contain `..`, are refused and named in the preview.
 - **Hermind's own Markdown export:** a file that is the export of a note of this database is `duplicate` (`same as #id`) or
   `edited`; a file whose `status` is `superseded` or `merged` is `history`. Into a different database the folder imports as
   new notes, with kind, tags, trust, pin and validity.

@@ -146,3 +146,23 @@ def test_an_imported_note_has_the_same_columns_as_the_live_mirror_wrote(tmp_path
     pick = lambda db, text: next({c: n[c] for c in cols} for n in notes(db) if n["content"] == text)
     for text in ("User writes in Cantonese and English.", "The VPS has 4GB RAM and runs Ubuntu 22.04."):
         assert pick(tmp_path / "imp.db", text) == pick(mirror_db, text)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_a_linked_memory_file_in_a_folder_is_reported_not_read(tmp_path):
+    import os
+    outside = tmp_path / "outside.md"
+    outside.write_text("Zorblax backup runs at 03:00 on node seven.\n§\nQuillon reports are due on Fridays.\n", encoding="utf-8")
+    d = tmp_path / "memories"
+    d.mkdir()
+    (d / "USER.md").write_text(USER, encoding="utf-8")
+    os.symlink(outside, d / "MEMORY.md")
+    res = import_core.run_import(str(d), tmp_path / "h.db", reader="hermes-builtin", apply=True, backup=False)
+    assert res["counts"]["new"] == 3 and res["counts"]["unreadable"] == 1
+    bad = next(e for e in res["entries"] if e["outcome"] == "unreadable")
+    assert bad["origin"] == "MEMORY.md" and "symbolic link" in bad["reason"]
+    s = DecisionStore(str(tmp_path / "h.db"))
+    try:
+        assert not any("Zorblax" in r[0] for r in s.conn.execute("SELECT content FROM notes"))
+    finally:
+        s.close()

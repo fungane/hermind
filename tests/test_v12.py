@@ -99,3 +99,26 @@ def test_extraction_prompt_defaults_to_nothing(pkg):
     p = llm.LLMClient.FACTS_PROMPT
     assert "return an empty list unless" in p and "language the USER" in p
     p.format(turn="x")   # braces stay valid for str.format
+
+
+def test_extracted_fact_that_was_forgotten_does_not_rewrite_a_twin(provider):
+    gone = "Zorblax backup runs at 03:00 every night on node seven today."
+    twin = "Zorblax backup runs at 03:00 every night on node seven."
+    gid = json.loads(provider.handle_tool_call("memory_remember", {"content": gone, "kind": "tech"}))["id"]
+    nid = json.loads(provider.handle_tool_call("memory_remember", {"content": twin, "kind": "tech"}))["id"]
+    provider.handle_tool_call("memory_forget", {"id": gid})
+    provider._llm = _FakeLLM([_fact(gone)])
+    provider._extract_and_store("u", "a", "chunk", "s1")          # the refusal is a normal skip, not an error
+    assert provider._store.get(nid)["content"] == twin
+    assert all(h["content"] != gone for h in provider._store.search("seven today"))
+
+
+def test_builtin_memory_replace_with_forgotten_text_is_skipped(provider):
+    gone = "Zorblax backup runs at 03:00 every night on node seven."
+    provider.on_memory_write("add", "memory", "Quillon reports are due on Fridays.")
+    provider.on_memory_write("add", "memory", gone)
+    gid = provider._store.find_by_content(gone)
+    provider._store.forget(gid)
+    provider.on_memory_write("replace", "memory", gone, {"previous_content": "Quillon reports are due on Fridays."})
+    assert provider._store.find_by_content(gone) is None            # not resurrected, no exception
+    assert provider._store.find_by_content("Quillon reports are due on Fridays.") is not None

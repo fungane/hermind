@@ -146,6 +146,12 @@ class EntityMixin:
         return {"entities": n_ent, "note_entities": n_links}
 
     def add_entity_aliases(self, name: str, aliases: Iterable[str]) -> int:
+        aliases = list(aliases)
+        try:
+            from .store_writes import screen_fields
+        except ImportError:
+            from store_writes import screen_fields
+        screen_fields(entities=[name, *aliases])
         with self._lock, self.conn:
             key = _entity_key(name)
             if not _valid_entity(key):

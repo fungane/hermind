@@ -327,3 +327,13 @@ def test_modern_read_only_writes_nothing(mcp_spawn, tmp_path, pkg):
     c.request("tools/call", _meta(name="memory_search", arguments={"query": "deploys"}))
     c.close()
     assert sqlite3.connect(db).execute("SELECT total(access_count), count(*) FROM notes").fetchone() == before
+
+
+def test_deeply_nested_json_is_a_parse_error_and_the_server_keeps_serving(mcp_spawn):
+    c = mcp_spawn()
+    for line in ("[" * 100_000, '{"a":' * 50_000, "[" * 100_000 + "]" * 100_000):
+        c.send_raw(line)
+        r = c.read()
+        assert r["id"] is None and r["error"]["code"] == -32700
+    assert c.request("ping")["result"] == {}
+    assert c.close() == 0

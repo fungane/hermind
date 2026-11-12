@@ -11,7 +11,7 @@ from typing import Iterable
 try:
     from .store_common import (
         B, BOOST_DIVISOR, DAY, EXPANSION_WEIGHT, FIELD_GEN, FIELD_LEARNED, FIELD_WEIGHT, K1,
-        KIND_WEIGHT, MAX_DF_FRACTION, MAX_MULTI_QUERIES, PENDING_WEIGHT, RECENCY_HALF_LIFE_DAYS, RE_CJK_CHAR,
+        COMMON_FALLBACK_POSTINGS, KIND_WEIGHT, MAX_DF_FRACTION, MAX_MULTI_QUERIES, PENDING_WEIGHT, RECENCY_HALF_LIFE_DAYS, RE_CJK_CHAR,
         SOURCE_ARMS, STALE_PENALTY, FB_MAX_EFFECT, open_rate_factor, TRUST_DEFAULT, TRUST_HIDE_BELOW, _clean_scope, _clean_tags, _clip, day_bounds, valid_at,
         _now, _parse_when, _set_sim, hotness, numbers, query_time_window, sim_features, token_weight,
         tokenize, query_token_weights, query_term_factor
@@ -19,7 +19,7 @@ try:
 except ImportError:  # loaded as a top-level module (tools/)
     from store_common import (
         B, BOOST_DIVISOR, DAY, EXPANSION_WEIGHT, FIELD_GEN, FIELD_LEARNED, FIELD_WEIGHT, K1,
-        KIND_WEIGHT, MAX_DF_FRACTION, MAX_MULTI_QUERIES, PENDING_WEIGHT, RECENCY_HALF_LIFE_DAYS, RE_CJK_CHAR,
+        COMMON_FALLBACK_POSTINGS, KIND_WEIGHT, MAX_DF_FRACTION, MAX_MULTI_QUERIES, PENDING_WEIGHT, RECENCY_HALF_LIFE_DAYS, RE_CJK_CHAR,
         SOURCE_ARMS, STALE_PENALTY, FB_MAX_EFFECT, open_rate_factor, TRUST_DEFAULT, TRUST_HIDE_BELOW, _clean_scope, _clean_tags, _clip, day_bounds, valid_at,
         _now, _parse_when, _set_sim, hotness, numbers, query_time_window, sim_features, token_weight,
         tokenize, query_token_weights, query_term_factor
@@ -75,9 +75,11 @@ class SearchMixin:
 
     def _bm25_multi(self, term_sets: list[dict], n_docs: int, avg_c: float, avg_k: float, now: float, limit: int,
                     window: tuple | None, scopes: list | None = None, df_cache: dict | None = None,
-                    W: dict | None = None) -> list[tuple]:
+                    W: dict | None = None, rare_fallback: bool = True) -> list[tuple]:
         """_bm25_candidates for several queries in ONE statement: each distinct term's postings are scanned and
-        BM25-scored once, then aggregated per query (concept max, coverage) and the top *limit* kept per query."""
+        BM25-scored once, then aggregated per query (concept max, coverage) and the top *limit* kept per query.
+        rare_fallback: when every term of a query is very common, score the single rarest one over its newest
+        COMMON_FALLBACK_POSTINGS notes instead of returning nothing (False: return nothing, as the dedup probe wants)."""
         df_cache = {} if df_cache is None else df_cache
         W = {**self.weights, **(W or {})}
         fw_gen, fw_learned = float(W.get("gen_field", 0.5)), float(W.get("learned_field", 0.3))
@@ -92,6 +94,7 @@ class SearchMixin:
         qrows, totals = [], []
         for qi, terms in enumerate(term_sets):
             concept_max: dict[str, float] = {}
+            first_row, skipped = len(qrows), []
             for t, (qw, concept) in terms.items():
                 concept_max[concept] = max(concept_max.get(concept, 0.0), qw * maxidf)
                 df = df_cache.get(t)
@@ -99,14 +102,23 @@ class SearchMixin:
                 # almost no BM25 weight: they still count in the coverage denominator but are not scored.
                 uni = len(t) == 1 and RE_CJK_CHAR.match(t) is not None
                 if df and df > MAX_DF_FRACTION.get(uni, 0.5) * n_docs and n_docs > 200:
+                    skipped.append((df, t, qw * math.log(1 + (n_docs - df + 0.5) / (df + 0.5)), concept, qi))
                     continue
                 if df:
-                    qrows.append((t, qw * math.log(1 + (n_docs - df + 0.5) / (df + 0.5)), concept, qi))
+                    qrows.append((t, qw * math.log(1 + (n_docs - df + 0.5) / (df + 0.5)), concept, qi, 0))
+            if len(qrows) == first_row and skipped and rare_fallback:
+                # every term of the query is very common: score the single rarest one over its newest postings only
+                # (a bounded scan: scoring every posting of a word in most notes costs ~25x a normal search)
+                _, t, w, c, i = min(skipped)
+                lo = self.conn.execute(
+                    "SELECT MIN(note_id) FROM (SELECT DISTINCT note_id FROM postings WHERE term=? "
+                    "ORDER BY note_id DESC LIMIT ?)", (t, COMMON_FALLBACK_POSTINGS)).fetchone()[0] or 0
+                qrows.append((t, w, c, i, lo))
             totals.append(sum(concept_max.values()) or 1.0)
         out: list[tuple] = [({}, {}, {}) for _ in term_sets]
         if not qrows:
             return out
-        values = ",".join("(?,?,?,?)" for _ in qrows)
+        values = ",".join("(?,?,?,?,?)" for _ in qrows)
         args: list = [x for r in qrows for x in r]
         tvalues = ",".join("(?,?)" for _ in totals)
         targs: list = [x for qi, tot in enumerate(totals) for x in (qi, tot)]
@@ -121,7 +133,7 @@ class SearchMixin:
         field_filter = "".join(f" AND p.field != {f}" for f, w in ((FIELD_GEN, fw_gen), (FIELD_LEARNED, fw_learned))
                                if w <= 0)
         sql = f"""
-        WITH q(term, w, c, qi) AS (VALUES {values}),
+        WITH q(term, w, c, qi, lo) AS (VALUES {values}),
         tq(qi, total) AS (VALUES {tvalues}),
         per AS (
           SELECT p.note_id AS nid, q.qi AS qi, q.c AS c, q.w AS w,
@@ -130,7 +142,7 @@ class SearchMixin:
                      (p.tf + {K1} * CASE p.field WHEN 0 THEN 1 - {B} + {B} * n.doc_len_content * 1.0 / ?
                                     WHEN 1 THEN 1 - {B} + {B} * n.doc_len_keywords * 1.0 / ? ELSE 1 END)) AS s,
                  MAX(p.field = 1) AS kw
-          FROM q CROSS JOIN postings p ON p.term = q.term
+          FROM q CROSS JOIN postings p ON p.term = q.term AND p.note_id >= q.lo
                CROSS JOIN notes n INDEXED BY notes_bm25 ON n.id = p.note_id
           WHERE {where}{field_filter}
           GROUP BY p.note_id, q.qi, p.term),
@@ -255,7 +267,7 @@ class SearchMixin:
                since=None, until=None, include_history: bool = False, weights: dict | None = None,
                explain: bool = False, fusion: str = "rrf", include_low_trust: bool = False,
                scope: str | None = None, tags: str | Iterable[str] = "", track: bool = True,
-               as_of=None, _shared: dict | None = None) -> list[dict]:
+               as_of=None, rare_fallback: bool = True, _shared: dict | None = None) -> list[dict]:
         """Multi-signal retrieval fused with reciprocal rank fusion.
 
         Signals: bm25 (content+keywords, with query coverage), keywords (keyword/alias field only), entity (notes
@@ -265,6 +277,7 @@ class SearchMixin:
         hard-filter on the note's event date (or creation date). Merged/superseded notes are hidden and credit their
         canonical note, unless include_history=True; notes with trust < 0.2 are hidden unless include_low_trust.
         fusion="interleave" returns each candidate arm's #1, #2, ... in turn (used for dedup candidates).
+        rare_fallback=False: a query made only of very common words returns no lexical matches instead of scoring the rarest of them.
         scope: the store's scope by default (plus 'shared'); "*" = all scopes. tags: notes carrying all of them.
         as_of ('YYYY-MM-DD'): the notes that were valid on that day - valid_from <= day and (valid_to is NULL or
         day < valid_to), valid_from falling back to the creation time - including superseded versions that were
@@ -278,7 +291,7 @@ class SearchMixin:
         s_since, s_until = _parse_when(since), _parse_when(until)
         if s_since is not None or s_until is not None:
             window = (s_since if s_since is not None else 0.0,
-                      (s_until + DAY) if s_until is not None else 1e18)
+                      day_bounds(s_until)[1] if s_until is not None else 1e18)   # a local day is 23 or 25 h on a DST day
         terms = (_shared or {}).get("terms", {}).get(query) or self._query_terms(query)
         qwin = query_time_window(query, now)
         with self._lock:
@@ -297,7 +310,7 @@ class SearchMixin:
                 bm, kws, matched = (dict(d) for d in _shared["bm25"][query])
             else:
                 bm, kws, matched = (self._bm25_multi([terms], n_docs, avg_c, avg_k, now, n_cand, window, scopes,
-                                                     W=W)[0] if terms else ({}, {}, {}))
+                                                     W=W, rare_fallback=rare_fallback)[0] if terms else ({}, {}, {}))
             q_ents = self.detect_entities(query)
             ent_df = {}
             if q_ents:
@@ -400,7 +413,8 @@ class SearchMixin:
         s_since, s_until = _parse_when(filters.get("since")), _parse_when(filters.get("until"))
         window = None
         if s_since is not None or s_until is not None:
-            window = (s_since if s_since is not None else 0.0, (s_until + DAY) if s_until is not None else 1e18)
+            window = (s_since if s_since is not None else 0.0,
+                      day_bounds(s_until)[1] if s_until is not None else 1e18)   # a local day is 23 or 25 h on a DST day
         with self._lock:
             shared["stats"] = self._live_stats(now)
             if shared["stats"][0]:

@@ -192,3 +192,23 @@ def test_install_hook_quotes_paths_with_spaces(tmp_path):
     r = subprocess.run(d["command"], shell=True, input=json.dumps({"prompt": "which toner cartridge does the printer use"}),
                        capture_output=True, text=True, timeout=60)
     assert "blue toner" in json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_hook_survives_a_console_that_cannot_encode_the_recall(tmp_path):
+    sys.path.insert(0, str(ROOT))
+    from store import DecisionStore
+    path = str(tmp_path / "cjk.db")
+    s = DecisionStore(path)
+    s.add("Zorblax 備份每日凌晨三點在第七節點執行，保留七日。", "tech", "zorblax backup nightly")
+    s.close()
+    e = {k: v for k, v in os.environ.items() if not k.startswith(("HERMIND_", "HERMES_"))}
+    e.update(PYTHONIOENCODING="ascii", HOME=str(tmp_path))
+    payload = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "when does the zorblax backup run?"})
+    r = subprocess.run([sys.executable, HOOK, "--db", path], input=payload.encode("ascii"), capture_output=True, env=e, timeout=60)
+    assert r.returncode == 0 and r.stderr == b""
+    ctx = json.loads(r.stdout.decode("utf-8"))["hookSpecificOutput"]["additionalContext"]
+    assert "備份每日凌晨三點" in ctx
+    # a prompt in Chinese reaches the hook as UTF-8 bytes even though the console is ASCII
+    payload = json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "備份幾點執行 zorblax"}, ensure_ascii=False)
+    r = subprocess.run([sys.executable, HOOK, "--db", path], input=payload.encode("utf-8"), capture_output=True, env=e, timeout=60)
+    assert r.returncode == 0 and "備份每日凌晨三點" in json.loads(r.stdout.decode("utf-8"))["hookSpecificOutput"]["additionalContext"]

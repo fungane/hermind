@@ -73,6 +73,27 @@ def looks_secret(text: str) -> str | None:
     return None
 
 
+def looks_secret_label(value: str) -> str | None:
+    """Reason string if a single short label (one tag, one entity name or alias) is itself a credential, else None.
+    Labels are not prose: "word = value" / "word: value" patterns are not applied (a tag "token" next to "issue-1234" or
+    an entity "Refresh Token=refresh_token|RT2" is ordinary). Refused: the known key shapes (also inside the label),
+    a URL with an embedded password, and a 32+ character token that mixes upper case,
+    lower case and digits."""
+    t = unicodedata.normalize("NFKC", (value or "").translate(_ZERO_WIDTH))
+    for rx in _RE_STRONG:
+        if rx.search(t):
+            return "looks like an API key / private key"
+    for m in _RE_URL_CRED.finditer(t):
+        if _secret_like(m.group(1)):
+            return "looks like a URL with an embedded password"
+    for word in t.split():
+        w = word.strip(".,;:()[]{}\"'`")
+        if (re.fullmatch(r"[A-Za-z0-9+/_\-]{32,}={0,2}", w) and re.search(r"[A-Z]", w) and re.search(r"[a-z]", w)
+                and re.search(r"\d", w)):
+            return "looks like a long random token"
+    return None
+
+
 # What a credential looks like AFTER Hermes' egress scrub (agent/redact.py) masked it on the way to the provider:
 # "sk-pro...IiHh", "hf_Zz9...OoNn", "postgres://admin:***@host", "aws_secret_access_key=***". Harmless, but a note
 # holding one is useless (the value is gone) and only clutters recall, so explicit writes refuse it.

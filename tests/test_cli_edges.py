@@ -85,3 +85,101 @@ def test_invisible_characters_do_not_split_words():
     from textnorm import normalize
     assert normalize("Postgre\u200bSQL\ufeff") == "postgresql"
     assert normalize("data\u00adbase") == "database"
+
+
+# -- the scripts in tools/: one line and a nonzero exit, never a traceback ---------------------------------------------------
+
+
+def _tool(home, name, *args):
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+    for k in [k for k in env if k.startswith("HERMIND_")]:
+        del env[k]
+    return subprocess.run([sys.executable, str(ROOT / "tools" / name), *args], capture_output=True, text=True, env=env, timeout=60)
+
+
+def _make_db(path):
+    sys.path.insert(0, str(ROOT))
+    from store import DecisionStore
+    s = DecisionStore(str(path))
+    s.add("Zorblax backup runs at 03:00 on node seven.", kind="tech")
+    s.close()
+
+
+def test_backup_keep_must_be_one_or_more_and_never_deletes_on_a_bad_value(tmp_path):
+    db = tmp_path / "m.db"
+    _make_db(db)
+    dest = tmp_path / "bk"
+    r = _tool(tmp_path, "backup.py", "--dest", str(dest), str(db))
+    assert r.returncode == 0 and len(list(dest.glob("*.db"))) == 1
+    for bad in ("-1", "0", "x"):
+        r = _tool(tmp_path, "backup.py", "--dest", str(dest), "--keep", bad, str(db))
+        assert r.returncode == 2 and "--keep" in r.stderr and "Traceback" not in r.stderr, (bad, r.stderr)
+        assert len(list(dest.glob("*.db"))) == 1                                  # nothing was deleted
+    ok = _tool(tmp_path, "backup.py", "--dest", str(dest), "--keep", "1", str(db))
+    assert ok.returncode == 0 and "kept 1" in ok.stdout
+
+
+def test_backup_of_a_missing_database_says_so(tmp_path):
+    r = _tool(tmp_path, "backup.py", "--dest", str(tmp_path / "bk"), str(tmp_path / "none.db"))
+    assert r.returncode == 1 and "database not found" in r.stderr and str(tmp_path / "none.db") in r.stderr
+    assert "Traceback" not in r.stderr
+    db = tmp_path / "m.db"
+    _make_db(db)
+    r = _tool(tmp_path, "backup.py", "--dest", str(tmp_path / "bk"), str(db), str(tmp_path / "none.db"))
+    assert r.returncode == 1 and "database not found" in r.stderr             # one missing among several is still a failure
+
+
+def test_generate_key_file_does_not_overwrite_and_says_so(tmp_path):
+    key = tmp_path / "db.key"
+    key.write_text("keep me\n", encoding="utf-8")
+    r = _tool(tmp_path, "encrypt_db.py", "--generate-key-file", str(key))
+    assert r.returncode != 0 and "already exists" in r.stderr and "Traceback" not in r.stderr
+    assert key.read_text(encoding="utf-8") == "keep me\n"
+    blocked = tmp_path / "afile"
+    blocked.write_text("x", encoding="utf-8")
+    r = _tool(tmp_path, "encrypt_db.py", "--generate-key-file", str(blocked / "sub" / "db.key"))
+    assert r.returncode != 0 and "cannot write" in r.stderr and "Traceback" not in r.stderr
+
+
+def test_export_hindsight_without_a_server_is_one_line(tmp_path):
+    r = _tool(tmp_path, "export_hindsight.py", "bank", str(tmp_path / "out.json"), "--url", "http://127.0.0.1:1")
+    assert r.returncode != 0 and "cannot reach http://127.0.0.1:1" in r.stderr and "Traceback" not in r.stderr
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_closed_pipe_ends_the_command_quietly(tmp_path):
+    sys.path.insert(0, str(ROOT))
+    from store import DecisionStore
+    db = tmp_path / "m.db"
+    s = DecisionStore(str(db))
+    for i in range(30):                                         # about 1.2 MB of JSON: far more than a pipe buffer holds
+        s.add(f"Zorblax note {i}: " + " ".join(f"word{i}x{j}" for j in range(4000)), kind="tech")
+    s.close()
+    env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    env.pop("HERMIND_DB", None)
+    for cmd in (["export", "--db", str(db)], ["search", "zorblax", "--db", str(db), "--limit", "20"]):
+        p = subprocess.Popen([sys.executable, str(ROOT / "hermind_cli.py"), *cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        p.stdout.readline()
+        p.stdout.close()                                         # like `| head -1`
+        err = p.stderr.read()
+        code = p.wait(timeout=60)
+        p.stderr.close()
+        assert err == b"", err.decode(errors="replace")[:300]
+        assert code in (0, 1), code
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell to close stdout")
+def test_closed_stdout_still_saves_the_note_and_exits_zero(tmp_path):
+    """Round 2: `hermind remember ... >&-` saved the note, then died with AttributeError on sys.stdout.flush()."""
+    env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    env.pop("HERMIND_DB", None)
+    db = tmp_path / "c.db"
+    for cmd in (f'"{sys.executable}" "{ROOT}/hermind_cli.py" remember "Zorblax backup runs at 03:00" --db "{db}" >&-',
+                f'"{sys.executable}" "{ROOT}/hermind_cli.py" remember "Quillon reports are due on Fridays" --db "{db}" --json >&-'):
+        r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, env=env)
+        assert r.returncode == 0 and "Traceback" not in r.stderr and r.stderr == "", (cmd, r.returncode, r.stderr)
+    r = _cli(tmp_path, "search", "zorblax", "--db", str(db))
+    assert "Zorblax backup runs at 03:00" in r.stdout

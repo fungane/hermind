@@ -469,7 +469,7 @@ def install_hermes(ns) -> dict:
                  "to_version": version(), "from_version": plugin_version(plugin), "steps": []}
     steps = res["steps"]
     if not (ROOT / "tools" / "deploy.sh").exists():
-        res["error"] = "this is not a git checkout (tools/ is missing); clone https://github.com/fungane/hermind and run it from there"
+        res["error"] = "this is not a git checkout (tools/ is missing); clone --branch v{} https://github.com/fungane/hermind.git and run it from there".format(version())
         return res
     if not home.is_dir():
         res["error"] = f"{home} does not exist: is Hermes installed for this profile? (use --hermes-home to point elsewhere)"
@@ -656,7 +656,7 @@ def remote_launch(ns, env: dict) -> tuple[str, list[str]]:
     if ns.ssh_port:
         ssh += ["-p", str(ns.ssh_port)]
     if ns.ssh_key:
-        ssh += ["-i", str(Path(ns.ssh_key).expanduser())]
+        ssh += ["-o", "IdentitiesOnly=yes", "-i", str(Path(ns.ssh_key).expanduser())]   # only this key: never the agent's (a normal key would open a shell)
     if ns.restricted:                              # the server's key is locked to one forced command: nothing to send
         return "ssh", ssh + [ns.remote]
     return "ssh", ssh + [ns.remote, f"{'env ' + prefix if prefix else ''}python3 {server}"]
@@ -669,8 +669,10 @@ def config_snippet(client: str, source: str, env: dict, launch: tuple[str, list[
     if client in MCPSERVERS_JSON:
         return {"where": MCPSERVERS_JSON[client], "format": "json", "snippet": j({"mcpServers": {"hermind": server}})}
     if client == "claude-code":
-        envs = "".join(f" -e {k}={v}" for k, v in env.items())
-        return {"where": "run in a shell", "format": "shell", "snippet": f"claude mcp add hermind{envs} -- {cmd} {' '.join(args)}".strip()}
+        import shlex                          # every value that lands in a shell command line is quoted for the shell
+        envs = "".join(f" -e {shlex.quote(f'{k}={v}')}" for k, v in env.items())
+        return {"where": "run in a shell", "format": "shell",
+                "snippet": f"claude mcp add hermind{envs} -- {' '.join(shlex.quote(x) for x in [cmd, *args])}"}
     if client == "vscode":
         return {"where": ".vscode/mcp.json or the user profile mcp.json", "format": "json",
                 "snippet": j({"servers": {"hermind": {"type": "stdio", **server}}})}
@@ -684,7 +686,7 @@ def config_snippet(client: str, source: str, env: dict, launch: tuple[str, list[
     if client == "openclaw":
         return {"where": "openclaw.json (or: openclaw mcp set)", "format": "json", "snippet": j({"mcp": {"servers": {"hermind": server}}})}
     if client == "continue":
-        lines = ["name: Hermind", "version: 0.0.1", "schema: v1", "mcpServers:", "  - name: hermind", f"    command: {cmd}",
+        lines = ["name: Hermind", "version: 0.0.1", "schema: v1", "mcpServers:", "  - name: hermind", f"    command: {json.dumps(cmd)}",
                  "    args: " + json.dumps(args)]
         if env:
             lines += ["    env:"] + [f"      {k}: {json.dumps(v)}" for k, v in env.items()]
@@ -696,7 +698,7 @@ def config_snippet(client: str, source: str, env: dict, launch: tuple[str, list[
         return {"where": "~/.codex/config.toml", "format": "toml", "snippet": "\n".join(lines)}
     if client == "dsh":
         lines = ["- insert:", "    - id: mcp-hermind", "      name: '@deepseek-ai/dsh-mcp-client'", "      config:", "        serverName: hermind",
-                 "        transport: stdio", f"        command: {cmd}", "        args: " + json.dumps(args)]
+                 "        transport: stdio", f"        command: {json.dumps(cmd)}", "        args: " + json.dumps(args)]
         if env:
             lines += ["        env:"] + [f"          {k}: {json.dumps(v)}" for k, v in env.items()]
         lines.append("        toolCallTimeoutMs: 30000")
@@ -717,6 +719,9 @@ def config_cmd(ns) -> tuple[dict, int]:
                          "(paths on THAT machine) instead of --db-from-profile / --source"}, 2
     if ns.restricted and not ns.remote:
         return {"error": "--restricted needs --remote USER@HOST"}, 2
+    if ns.restricted and not ns.ssh_key:
+        return {"error": "--restricted needs --ssh-key FILE: the dedicated key made by `hermind authorize-key`; without it ssh "
+                         "would offer your default keys, which are not the restricted one (and may open a full shell)"}, 2
     if ns.restricted and (ns.db or ns.write or ns.trust_writes or ns.key_file or ns.remote_hermes_profile):
         return {"error": "--restricted: the forced command in authorized_keys fixes the database, key file and write mode; "
                          "set them with `hermind authorize-key` on the server instead"}, 2
@@ -758,6 +763,8 @@ def config_cmd(ns) -> tuple[dict, int]:
 
 
 def config_text(d: dict) -> str:
+    if d.get("error") and "snippet" not in d and "clients" not in d:
+        return f"ERROR: {d['error']}"
     if "clients" in d and "snippet" not in d:
         return ((f"ERROR: {d['error']}; the known clients are:\n" if d.get("error") else "") + "\n".join(d.get("clients", [])) + ("\n" + d["untested_note"] if "untested_note" in d else ""))
     return f"# {d['client']}: {d['where']}\n{d['snippet']}" + (f"\n# note: {d['note']}" if d.get("note") else "")
@@ -843,7 +850,17 @@ def _db_path(ns) -> Path:
 
 
 def _ids(text: str) -> list[int]:
-    return [int(x) for x in re.findall(r"\d+", text or "")]
+    """Note ids from "12,15", "12 15" or "#12, #15": positive whole numbers separated by commas and/or spaces, an optional
+    # in front of each. Anything else (-2, 1-3, 1abc, 0, a number SQLite cannot hold) raises ValueError naming the item."""
+    out = []
+    for item in re.split(r"[,\s]+", (text or "").strip()):
+        if not item:
+            continue
+        m = re.fullmatch(r"#?(\d+)", item)
+        if not m or not 1 <= int(m.group(1)) < 2 ** 63:
+            raise ValueError(f"{item!r} is not a note id (use positive whole numbers separated by commas or spaces, like 12,15)")
+        out.append(int(m.group(1)))
+    return out
 
 
 def review_cmd(ns) -> dict:
@@ -867,13 +884,22 @@ def _review_cmd(ns) -> dict:
     store = DecisionStore(str(db))
     try:
         res: dict = {"ok": True, "database": str(db)}
-        for flag, action in (("confirm", "confirm"), ("reject", "reject"), ("restore", "restore")):
+        todo = []
+        for flag, action in (("confirm", "confirm"), ("reject", "reject"), ("restore", "restore")):   # check every flag first: a bad one changes nothing
             val = getattr(ns, flag)
             if val is not None:
-                ids = _ids(val) if val != "all" else [n["id"] for n in store.list_pending(limit=500)]
+                if val.strip() == "all" and flag != "restore":
+                    ids = [n["id"] for n in store.list_pending(limit=500)]
+                else:
+                    try:
+                        ids = _ids(val)
+                    except ValueError as exc:
+                        return {"ok": False, "error": f"--{flag}: {exc}"}
                 if not ids:
-                    return {"ok": False, "error": f"--{flag} needs note ids (e.g. --{flag} 12,15) or 'all'"}
-                res[action] = store.review_many(action, ids)
+                    return {"ok": False, "error": f"--{flag} needs note ids (e.g. --{flag} 12,15)" + ("" if flag == "restore" else " or 'all'")}
+                todo.append((action, ids))
+        for action, ids in todo:
+            res[action] = store.review_many(action, ids)
         pending = store.list_pending(limit=ns.limit)
         res["pending_count"] = store.pending_count()
         res["pending"] = [{"id": n["id"], "kind": n["kind"], "from": n.get("source_session") or "",
@@ -908,7 +934,7 @@ def audit_db(ns) -> dict:
     sys.path.insert(0, str(ROOT))
     import dbdriver
     from pii import find_pii, redact_pii
-    from screen import looks_masked_secret, looks_secret, strip_private
+    from screen import looks_masked_secret, looks_secret, looks_secret_label, strip_private
     try:
         if dbdriver.is_plaintext_file(db):
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
@@ -918,13 +944,22 @@ def audit_db(ns) -> dict:
     except Exception as exc:
         return {"ok": False, "error": f"cannot open {db}: {type(exc).__name__}: {str(exc)[:160]}"}
     findings, counts, total = [], {}, 0
+    entity_findings: list[dict] = []
+    n_entities = 0
     try:
-        for nid, content, keywords, kind, status, review, created in con.execute(
-                "SELECT id, content, COALESCE(keywords,''), kind, status, review, created_at FROM notes ORDER BY id"):
+        for eid, name, aliases in con.execute("SELECT id, name, COALESCE(aliases,'') FROM entities ORDER BY id"):
+            n_entities += 1                      # each name and each alias on its own, never joined with anything else
+            where = [pos for pos, v in [("name", name), *((f"alias {i}", a) for i, a in enumerate(aliases.split("|"), 1))]
+                     if v and looks_secret_label(v)]
+            if where:
+                entity_findings.append({"entity_id": eid, "found": ["credential"], "where": where})
+        for nid, content, keywords, kind, status, review, created, tags in con.execute(
+                "SELECT id, content, COALESCE(keywords,''), kind, status, review, created_at, COALESCE(tags,'') "
+                "FROM notes ORDER BY id"):
             total += 1
-            text = f"{content}\n{keywords}"
+            text = f"{content}\n{keywords}\n{tags}"           # a note is flagged for its own content, keywords and tags only
             kinds = []
-            if looks_secret(text):
+            if looks_secret(content) or looks_secret(keywords) or any(looks_secret_label(t) for t in [tags, *tags.split()]):
                 kinds.append("credential")
             if looks_masked_secret(text):
                 kinds.append("masked-credential")
@@ -940,12 +975,23 @@ def audit_db(ns) -> dict:
             if "credential" not in kinds:
                 item["excerpt"] = redact_pii(content or "")[0][:ns.chars]
             findings.append(item)
+    except sqlite3.Error as exc:       # a truncated or damaged file, or a SQLite file that is not a Hermind database
+        return {"ok": False, "error": f"cannot read {db}: {type(exc).__name__}: {str(exc)[:160]}"}
     finally:
         con.close()
     res = {"ok": True, "database": str(db), "notes_scanned": total, "flagged": len(findings), "by_type": counts,
            "findings": findings[:ns.limit], "shown": min(len(findings), ns.limit),
+           "entities_scanned": n_entities, "entities_flagged": len(entity_findings),
+           "entity_findings": entity_findings[:ns.limit],
            "note": "pattern matching only: expect some false positives and some misses (names, addresses and free text are not detected). "
                    "Nothing was changed. Remove a note with memory_forget, or edit it with memory_update."}
+    if entity_findings:
+        res["entity_advice"] = ("an ENTITY row (name or alias) looks like a credential; the value is not shown. Hermind has no command or tool "
+                                "that edits or removes an entity alias, and memory_forget/memory_update only touch notes. To clear it, stop "
+                                "every program that uses the database, keep a copy of the file, then run in the sqlite3 shell: "
+                                "UPDATE entities SET aliases='' WHERE id=<entity_id>; (alias findings), or, for a name, rename it with "
+                                "UPDATE entities SET name='renamed', key='renamed' WHERE id=<entity_id>; "
+                                "the entity index is rebuilt from the table the next time the database is opened.")
     return res
 
 
@@ -954,6 +1000,12 @@ def audit_text(d: dict) -> str:
         return "ERROR: " + d["error"]
     lines = [f"{d['notes_scanned']} notes scanned in {d['database']}: {d['flagged']} flagged "
              + (", ".join(f"{k} {v}" for k, v in sorted(d["by_type"].items())) if d["by_type"] else "")]
+    if d.get("entity_findings"):
+        lines.append(f"{d['entities_scanned']} entities scanned: {d['entities_flagged']} flagged (ENTITY findings, the value is not shown)")
+        lines += [f"  ENTITY #{e['entity_id']} {','.join(e['where'])}: {','.join(e['found'])}" for e in d["entity_findings"]]
+        if d["entities_flagged"] > len(d["entity_findings"]):
+            lines.append(f"  ... {d['entities_flagged'] - len(d['entity_findings'])} more (raise --limit)")
+        lines.append(d["entity_advice"])
     for f in d["findings"]:
         lines.append(f"  #{f['id']} [{f['kind']}/{f['status']}/{f['review']}] {f['created']} {','.join(f['found'])}"
                      + (f": {f['excerpt']}" if f.get("excerpt") else "  (excerpt not shown: credential-like value)"))
@@ -1249,6 +1301,7 @@ def _note_cmd(ns) -> dict:
     db = _mcp_db(ns)
     sys.path.insert(0, str(ROOT))
     from store import DecisionStore
+    from store_common import explicit_never_expires
     if ns.cmd != "remember" and not db.exists():
         return {"ok": False, "error": f"{db} does not exist yet: save a note first (hermind remember \"...\")"}
     if not db.parent.exists():                     # a folder made here is the owner's only, as DecisionStore makes it
@@ -1258,10 +1311,16 @@ def _note_cmd(ns) -> dict:
     try:
         if ns.cmd == "remember":
             try:
-                nid, created = store.add(ns.text, kind=ns.kind, keywords=ns.keywords or "")
+                # a note saved on purpose with kind auto keeps the kind the text suggests but never expires;
+                # only a kind chosen with --kind chat / news keeps its time to live
+                nid, created = store.add(ns.text, kind=ns.kind, keywords=ns.keywords or "",
+                                         never_expires=explicit_never_expires(ns.kind))
             except Exception as e:   # RefusedWrite (secret, forgotten text) or ValueError (empty text)
                 return {"ok": False, "error": str(e) or type(e).__name__}
-            return {"ok": True, "database": str(db), "id": nid, "created": created}
+            note = store.get(nid) or {}
+            exp = note.get("expires_at")
+            return {"ok": True, "database": str(db), "id": nid, "created": created, "kind": note.get("kind"),
+                    "expires": time.strftime("%Y-%m-%d", time.localtime(exp)) if exp else None}
         if ns.cmd == "search":
             hits = store.search(ns.query, limit=ns.limit)
             return {"ok": True, "database": str(db), "results": [
@@ -1453,6 +1512,26 @@ def vectors_text(d: dict) -> str:
 
 
 def main(argv=None) -> int:
+    """The command line. A closed pipe (`hermind export | head -1`) ends the command quietly instead of with a traceback."""
+    try:
+        code = _main(argv)
+        try:
+            if sys.stdout is not None:     # None: stdout was closed (`>&-`); the command ran, there is just nowhere to print
+                sys.stdout.flush()         # buffered output meets the closed pipe here, not at interpreter exit
+        except BrokenPipeError:
+            raise
+        except (ValueError, OSError):      # a closed or unusable stdout is not a failure of the command
+            pass
+        return code
+    except BrokenPipeError:
+        try:                               # what is left to flush at exit goes nowhere (the pattern of the Python documentation)
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except (OSError, ValueError, AttributeError):
+            pass
+        return 1
+
+
+def _main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):   # Windows consoles default to a legacy code page that cannot print notes
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -1486,7 +1565,7 @@ def main(argv=None) -> int:
     s.add_argument("--remote-hermes-profile", metavar="NAME", help="use that Hermes profile's database on the remote machine")
     s.add_argument("--ssh-port", type=int)
     s.add_argument("--ssh-key")
-    s.add_argument("--restricted", action="store_true", help="the remote key was made with `hermind authorize-key` (forced command)")
+    s.add_argument("--restricted", action="store_true", help="the remote key was made with `hermind authorize-key` (forced command); needs --ssh-key")
     s.add_argument("--json", action="store_true")
     s = sub.add_parser("authorize-key")
     s.add_argument("--pubkey")
@@ -1639,7 +1718,7 @@ def main(argv=None) -> int:
     if ns.cmd == "audit-db":
         d = audit_db(ns)
         emit(d, ns.json, audit_text)
-        return 2 if not d["ok"] else (1 if ns.fail_on_findings and d["flagged"] else 0)
+        return 2 if not d["ok"] else (1 if ns.fail_on_findings and (d["flagged"] or d["entities_flagged"]) else 0)
     if ns.cmd == "questions":
         emit(questions(), ns.json, questions_text)
         return 0
@@ -1656,7 +1735,9 @@ def main(argv=None) -> int:
         elif ns.cmd == "search":
             print("\n".join(f"#{r['id']} [{r['kind']}] {r['content']}" for r in d["results"]) or "no results")
         elif ns.cmd == "remember":
-            print(f"saved note #{d['id']}" if d["created"] else f"already saved as note #{d['id']}")
+            life = f"expires {d['expires']}" if d.get("expires") else "does not expire"
+            print((f"saved note #{d['id']}" if d["created"] else f"already saved as note #{d['id']}")
+                  + f" (kind: {d['kind']}, {life})")
         else:
             import export_notes
             more = f" and {d['relations']} relations" if "relations" in d else ""

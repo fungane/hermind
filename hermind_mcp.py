@@ -176,6 +176,8 @@ def _coerce(schema: dict, value, path: str):
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"{path} must be an integer")
+        if not -2 ** 63 <= value < 2 ** 63:               # larger than SQLite can hold: an argument error, not an OverflowError
+            raise ValueError(f"{path} is out of range: use a whole number between {-2 ** 63} and {2 ** 63 - 1}")
     elif t == "boolean":
         if isinstance(value, str) and value.strip().lower() in ("true", "false"):
             value = value.strip().lower() == "true"
@@ -559,7 +561,7 @@ def serve(server: HermindMCP, instream, outstream) -> None:
             continue
         try:
             msg = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):                   # RecursionError: a line of 100,000 "[" must not end the server
             send(_json_rpc_error(None, -32700, "Parse error"))
             continue
         if isinstance(msg, list):                              # JSON-RPC batch (2025-03-26 and earlier)

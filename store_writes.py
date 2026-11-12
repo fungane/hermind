@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections import Counter
 from typing import Iterable
 
@@ -11,16 +12,18 @@ try:
         DAY, FIELD_CONTENT, FIELD_GEN, FIELD_KEYWORDS, FIELD_LEARNED, KINDS, LEARNED_MAX_TERMS, RE_CJK_CHAR,
         RefusedWrite, SOURCE_ARMS, _RE_NEGATION, parse_valid, _clean_scope, _clean_tags, _day, _digest, _entity_key,
         _now, _set_sim, classify_kind, core_text, default_expiry, extract_entities, jaccard, l0,
-        looks_secret, numbers, parse_dates, sim_features, strip_private, has_text_outside_private, token_weight, tokenize
+        looks_secret, looks_secret_label, numbers, parse_dates, sim_features, strip_private, has_text_outside_private, token_weight, tokenize
     )
 except ImportError:  # loaded as a top-level module (tools/)
     from store_common import (
         DAY, FIELD_CONTENT, FIELD_GEN, FIELD_KEYWORDS, FIELD_LEARNED, KINDS, LEARNED_MAX_TERMS, RE_CJK_CHAR,
         RefusedWrite, SOURCE_ARMS, _RE_NEGATION, parse_valid, _clean_scope, _clean_tags, _day, _digest, _entity_key,
         _now, _set_sim, classify_kind, core_text, default_expiry, extract_entities, jaccard, l0,
-        looks_secret, numbers, parse_dates, sim_features, strip_private, has_text_outside_private, token_weight, tokenize
+        looks_secret, looks_secret_label, numbers, parse_dates, sim_features, strip_private, has_text_outside_private, token_weight, tokenize
     )
 
+
+log = logging.getLogger(__name__)
 
 _UNSET = object()          # "argument not given" for set_fields (None means: clear the value)
 MAX_NOTE_CHARS = 100_000   # one note, in characters; a 10 MB write used to take ~10 s and bloat the DB
@@ -28,9 +31,56 @@ MAX_NOTE_CHARS = 100_000   # one note, in characters; a 10 MB write used to take
 FORGOTTEN_REFUSAL = "refused: this content was forgotten earlier (memory_forget)"
 
 
-def check_text(content: str, keywords: str | Iterable[str] = "", *, screen: bool = True) -> tuple[str, str | Iterable[str]]:
+def _labels(tags, entities) -> list[str]:
+    """Every tag, entity name and entity alias as its own string. An entity is a name, "name=alias|alias" (the documented
+    tool syntax) or a (name, aliases) pair; the name and each alias are split off before anything is looked at."""
+    out: list[str] = []
+    if isinstance(tags, str):
+        out += [tags, *tags.replace(",", " ").split()]
+    else:
+        out += [str(t) for t in (tags or ())]
+
+    def walk(x):
+        if isinstance(x, (tuple, list)):
+            for y in x:
+                walk(y)
+        else:
+            s = str(x)
+            out.append(s)
+            name, _, al = s.partition("=")
+            out.extend(p.strip() for p in [name, *al.split("|")] if p.strip())
+    walk(list(entities or ()))
+    return out
+
+
+def screen_fields(tags="", entities=()) -> None:
+    """Raises RefusedWrite when a tag, an entity name or an entity alias is itself a credential (screen.looks_secret_label).
+    Each one is looked at on its own: the prose patterns of looks_secret are for note text, not for a label."""
+    for label in _labels(tags, entities):
+        reason = looks_secret_label(label)
+        if reason:
+            raise RefusedWrite(f"refused: {reason}; store a description without the secret value")
+
+
+def clean_entities(entities) -> list:
+    """The entities that pass screen_fields, for entities the model extracted (not the caller): an offending one is
+    dropped (debug log, never its text) and the note is stored."""
+    out, dropped = [], 0
+    for e in entities or ():
+        try:
+            screen_fields(entities=[e])
+            out.append(e)
+        except RefusedWrite:
+            dropped += 1
+    if dropped:
+        log.debug("dropped %d extracted entit%s that looked like a credential", dropped, "y" if dropped == 1 else "ies")
+    return out
+
+
+def check_text(content: str, keywords: str | Iterable[str] = "", *, screen: bool = True, tags="",
+               entities=()) -> tuple[str, str | Iterable[str]]:
     """The store's own rules for a note's text, without touching a database: removes <private> text and returns
-    (content, keywords). Raises ValueError("content is empty") for no text and RefusedWrite for nothing left outside
+    (content, keywords). *tags* and *entities* (names) are screened like the text. Raises ValueError("content is empty") for no text and RefusedWrite for nothing left outside
     <private>, a note over MAX_NOTE_CHARS, or credential-like text. add() and the import core both call this, so a
     preview can ask the question without writing. (The "forgotten earlier" rule needs the tombstones table:
     FORGOTTEN_REFUSAL, is_forgotten().)"""
@@ -48,6 +98,7 @@ def check_text(content: str, keywords: str | Iterable[str] = "", *, screen: bool
         reason = looks_secret(content) or looks_secret(keywords if isinstance(keywords, str) else "")
         if reason:
             raise RefusedWrite(f"refused: {reason}; store a description without the secret value")
+        screen_fields(tags, entities)
     return content, keywords
 
 
@@ -60,21 +111,25 @@ class WriteMixin:
             proof_count: int = 1, screen: bool = True, candidate: bool = False, scope: str | None = None,
             tags: str | Iterable[str] = "", review: str = "active", valid_from=None, valid_to=None,
             never_expires: bool = False, touch_existing: bool = True, commit: bool = True,
-            exact_entities: bool = False) -> tuple[int, bool]:
+            exact_entities: bool = False, reset_expiry: bool = True) -> tuple[int, bool]:
         """Insert a note. Returns (id, created). An exact duplicate (or, with *dedup_threshold*, a near-duplicate of
         the same kind) returns the existing id with created=False. kind="auto" classifies from the text.
         Raises RefusedWrite for credential-like content or content that was forgotten (tombstoned).
         review="pending" puts the note in the review queue (searchable but down-weighted until confirmed).
         valid_from / valid_to: when the fact is true in the world (ISO date); both optional, as_of searches use them.
         Keyword-only options for the import core (defaults keep the old behaviour): never_expires=True stores the note
-        without an expiry whatever its kind; touch_existing=False leaves an exact duplicate untouched (no proof_count
+        without an expiry whatever its kind (and, for an exact duplicate that is touched, removes the earlier copy's
+        expiry: an explicit save from the CLI or a tool uses it when no kind was chosen, see store_common.explicit_never_expires;
+        the same happens when the kind itself never expires, e.g. "decision"; reset_expiry=False turns this off for a writer
+        that is not trusted, whose re-save must not change an existing note's expiry); touch_existing=False leaves an exact duplicate untouched (no proof_count
         bump); commit=False leaves the transaction open so the caller can commit many notes at once; exact_entities=True
         links the note to the *entities* given and to nothing else (see _link_entities)."""
         review = "pending" if review == "pending" else "active"
         valid_from, valid_to = parse_valid(valid_from), parse_valid(valid_to)
         if valid_from is not None and valid_to is not None and valid_to <= valid_from:
             raise ValueError("valid_to must be after valid_from")
-        content, keywords = check_text(content, keywords, screen=screen)
+        tags, entities = (tags if isinstance(tags, str) else list(tags or ())), list(entities or ())
+        content, keywords = check_text(content, keywords, screen=screen, tags=tags, entities=entities)
         kind = (kind or "chat").strip().lower()
         if kind == "auto":
             kind = classify_kind(content)
@@ -103,6 +158,10 @@ class WriteMixin:
                 if touch_existing:
                     self.conn.execute("UPDATE notes SET proof_count=proof_count+? WHERE id=?",
                                       (max(1, int(proof_count)), row["id"]))
+                    # saving the same text again with a write that would itself get no expiry (never_expires, or a kind
+                    # without a time to live) keeps it: the earlier copy loses its expiry (not for an untrusted writer)
+                    if reset_expiry and expires_at is None and (never_expires or default_expiry(kind, created_at) is None):
+                        self.conn.execute("UPDATE notes SET expires_at=NULL WHERE id=?", (row["id"],))
                 return row["id"], False
             if dedup_threshold is not None:
                 recent = [tuple(r) for r in self.conn.execute(
@@ -331,7 +390,8 @@ class WriteMixin:
             return round(self.conn.execute("SELECT trust FROM notes WHERE id=?", (note_id,)).fetchone()[0], 3)
 
     def update(self, note_id: int, content: str, keywords: str | None = None, now: float | None = None) -> bool:
-        """Replace a note's text in place (same id). The old text is kept as a hidden history row
+        """Replace a note's text in place (same id). Raises RefusedWrite for credential-like text and for text that was
+        forgotten (tombstoned), like add(). The old text is kept as a hidden history row
         (status='superseded', valid_to=now, link 'version_of') so reflect/history still show what it said. The note
         itself gets valid_from=now if it had none (the new text is valid from the update), so an as_of search before
         the update finds the old version and one after it finds the new text."""
@@ -347,6 +407,8 @@ class WriteMixin:
         if reason:
             raise RefusedWrite(f"refused: {reason}; store a description without the secret value")
         with self._lock, self.conn:
+            if self.conn.execute("SELECT 1 FROM tombstones WHERE digest=?", (_digest(content),)).fetchone():
+                raise RefusedWrite(FORGOTTEN_REFUSAL)       # the same rule as add(): forgotten text does not come back
             self.conn.execute("DELETE FROM vectors WHERE note_id=?", (note_id,))   # text changed: re-embed later
             old = self.conn.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
             if not old:
@@ -461,6 +523,7 @@ class WriteMixin:
         Returns False if there is no such note."""
         sets, args = [], []
         if tags is not _UNSET:
+            screen_fields(tags)
             sets.append("tags=?"); args.append(_clean_tags(tags))
         if trust is not _UNSET:
             sets.append("trust=?"); args.append(min(1.0, max(0.0, float(trust))))
@@ -504,7 +567,7 @@ class WriteMixin:
         near-identical note is seen even when plain RRF would rank it below notes strong on several arms."""
         try:
             return [h["id"] for h in self.search(core_text(content)[:400], limit=per_arm * len(SOURCE_ARMS),
-                                                 kind=kind, fusion="interleave")]
+                                                 kind=kind, fusion="interleave", rare_fallback=False)]
         except Exception:  # never let a dedup probe break a write
             return []
 
