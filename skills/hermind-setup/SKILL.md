@@ -8,7 +8,7 @@ description: Use when asked to install Hermind. Asks where first.
 The user said something like "install / deploy / set up / upgrade Hermind (the memory tool)". Do not install anything yet:
 Hermind can go to a Hermes profile (CLI, desktop and gateway share one install, which belongs on the machine where the agent runs), to a command-line agent or a desktop app/IDE through MCP, or several, and the right answer depends on the user.
 
-1. Find the checkout (`hermind_cli.py` next to `AGENTS.md`). If there is none, `git clone --branch v1.0.1 https://github.com/fungane/hermind.git`.
+1. Find the checkout (`hermind_cli.py` next to `AGENTS.md`). If there is none, `git clone --branch v1.0.2 https://github.com/fungane/hermind.git`.
 2. Run `python3 hermind_cli.py questions --json`. It lists the questions to ask, with choices taken from this machine
    (Hermes profiles and their versions, detected agents). Skip a question whose `when` does not match earlier answers.
 3. Ask them in ONE question form (your clarify/ask tool), with the choices as options. Do not write the questions as prose.

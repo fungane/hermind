@@ -10,7 +10,7 @@ Chinese or Cantonese. No server, no cloud account, no LLM or API key needed. Bui
 
 English · [繁體中文](README.zh-TW.md)
 
-![version](https://img.shields.io/badge/version-1.0.1-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![version](https://img.shields.io/badge/version-1.0.2-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![deps](https://img.shields.io/badge/runtime%20deps-stdlib%20only-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 </div>
@@ -36,7 +36,7 @@ up for me."* It asks you where to install, shows a dry run, backs up first and g
 **Hermes agent** (recall before every turn, capture after every reply, review queue):
 
 ```bash
-git clone --branch v1.0.1 https://github.com/fungane/hermind.git ~/hermind
+git clone --branch v1.0.2 https://github.com/fungane/hermind.git ~/hermind
 cd ~/hermind
 python3 hermind_cli.py install-hermes --dry-run     # shows what it will do; add --profile NAME for another profile
 python3 hermind_cli.py install-hermes               # backs up, copies the plugin, checks the result
@@ -46,7 +46,7 @@ hermes config set memory.provider hermind           # then restart the Hermes ga
 **Claude Code, Cursor, Codex and other MCP clients** (needs [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp --write
+claude mcp add hermind -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind-mcp
 ```
 
 `hermind config CLIENT --write` prints the entry for 20+ other clients ([docs/setup.md](docs/setup.md#mcp-clients)).
@@ -58,14 +58,14 @@ TypeScript SDK; the other entries follow each client's documentation.
 **Check it, and try it without any agent:**
 
 ```bash
-uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind selftest     # a few seconds; touches no real data
-uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind remember "Atlas uses PostgreSQL for orders" --keywords "orders database 訂單 資料庫"
-uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind search "which database for orders"
+uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind selftest     # a few seconds; touches no real data
+uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind remember "Atlas uses PostgreSQL for orders" --keywords "orders database 訂單 資料庫"
+uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind search "which database for orders"
 ```
 
-`@v1.0.1` pins the tested release; change the number to upgrade. Below, `hermind` stands for that whole
-`uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind` (or install the command once with
-`uv tool install git+https://github.com/fungane/hermind@v1.0.1`).
+`@v1.0.2` pins the tested release; change the number to upgrade. Below, `hermind` stands for that whole
+`uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind` (or install the command once with
+`uv tool install git+https://github.com/fungane/hermind@v1.0.2`).
 
 ## Your data
 
@@ -106,10 +106,13 @@ Measured on Linux with 5,000 short synthetic notes; your numbers will vary with 
 
 | | |
 |---|---|
-| Installed package (wheel, no dependencies) | about 230 KB |
-| MCP server after 20 searches | about 29 MB of RAM idle, 43 MB at peak |
-| Database | about 5 MB per 5,000 short notes |
-| Optional semantic search (a separate worker that exits after 5 idle minutes) | 160 to 910 MB of RAM while awake, depending on the model |
+| Installed package (wheel, no dependencies) | about 240 KB |
+| MCP server after 20 searches | about 29 MB of RAM idle, about 40 MB at peak |
+| Database | about 6 MB per 5,000 short notes |
+| Optional semantic search (a separate worker that exits after 5 idle minutes) | about 180 to 960 MB of RAM while awake, depending on the model |
+
+The MCP figures are the Python server process itself; the `uvx` one-liner above also keeps a small `uv` launcher
+process running beside it (about 30 MB), which installing with `uv tool install` and running `hermind-mcp` directly avoids.
 
 ## How it works
 

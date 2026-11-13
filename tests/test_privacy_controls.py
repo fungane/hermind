@@ -253,9 +253,10 @@ def test_mcp_private_tags_are_stripped_on_write(mcp_spawn, tmp_path, pkg):
 # -- hermind review / audit-db ----------------------------------------------------------------------------------------
 
 
-def _cli(*args, home):
+def _cli(*args, home, extra_env=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMIND_", "HERMES_"))}
     env["HOME"] = env["USERPROFILE"] = str(home)
+    env.update(extra_env or {})
     return subprocess.run([sys.executable, CLI, *args], capture_output=True, text=True, env=env, timeout=120)
 
 
@@ -298,6 +299,93 @@ def test_cli_audit_is_read_only_and_never_prints_credentials(tmp_path):
     assert Path(db).read_bytes() == before                                        # nothing was changed
     assert _cli("audit-db", "--db", db, "--fail-on-findings", home=tmp_path).returncode == 1
     assert _cli("audit-db", "--db", str(tmp_path / "none.db"), home=tmp_path).returncode == 2
+
+
+# -- `review` and `audit-db` find the MCP database (resolution order of `_db_path`) ----------------------------------
+
+
+def _store_with_pending(db):
+    sys.path.insert(0, str(ROOT))
+    from store import DecisionStore
+    s = DecisionStore(str(db))
+    s.add("A note about the quarterly budget review meeting.", "decision", "quarterly budget review meeting", review="pending")
+    s.close()
+
+
+@pytest.mark.parametrize("cmd", ["review", "audit-db"])
+def test_db_path_falls_back_to_the_mcp_default_when_only_it_exists(tmp_path, cmd):
+    home = tmp_path / "home"
+    mcp_db = home / ".hermind" / "memory.db"
+    _store_with_pending(mcp_db)
+    r = _cli(cmd, "--json", home=home)
+    d = json.loads(r.stdout)
+    assert r.returncode == 0 and d["ok"] and d["database"] == str(mcp_db)
+    if cmd == "review":
+        assert d["pending_count"] == 1
+
+
+def test_db_path_an_existing_hermes_database_still_wins_over_hermind_db_env(tmp_path):
+    # 1.0.1 behaviour for a Hermes user who happens to have HERMIND_DB set (the Hermes plugin never reads it)
+    home = tmp_path / "home"
+    hermes_db = home / ".hermes" / "hermind.db"
+    _store_with_pending(hermes_db)
+    env_db = tmp_path / "env.db"
+    _store_with_pending(env_db)
+    for env in ({"HERMIND_DB": str(env_db)}, {"HERMIND_DB": str(tmp_path / "not-created-yet.db")}):
+        r = _cli("review", "--json", home=home, extra_env=env)
+        d = json.loads(r.stdout)
+        assert r.returncode == 0 and d["ok"] and d["database"] == str(hermes_db), env
+
+
+def test_db_path_hermind_db_env_is_used_when_there_is_no_hermes_database(tmp_path):
+    home = tmp_path / "home"
+    _store_with_pending(home / ".hermind" / "memory.db")        # a decoy: the env var comes first
+    env_db = tmp_path / "env.db"
+    _store_with_pending(env_db)
+    r = _cli("review", "--json", home=home, extra_env={"HERMIND_DB": str(env_db)})
+    d = json.loads(r.stdout)
+    assert r.returncode == 0 and d["ok"] and d["database"] == str(env_db)
+
+
+def test_db_path_hermind_db_env_gets_the_legacy_name_fallback(tmp_path):
+    home = tmp_path / "home"
+    old = tmp_path / "x" / "decision_memory.db"
+    _store_with_pending(old)
+    r = _cli("review", "--json", home=home, extra_env={"HERMIND_DB": str(tmp_path / "x" / "hermind.db")})
+    d = json.loads(r.stdout)
+    assert r.returncode == 0 and d["ok"] and d["database"] == str(old)
+
+
+@pytest.mark.parametrize("cmd", ["review", "audit-db"])
+def test_db_path_uses_the_hermes_database_when_that_is_all_there_is(tmp_path, cmd):
+    home = tmp_path / "home"
+    hermes_db = home / ".hermes" / "hermind.db"
+    _store_with_pending(hermes_db)
+    r = _cli(cmd, "--json", home=home)
+    d = json.loads(r.stdout)
+    assert r.returncode == 0 and d["ok"] and d["database"] == str(hermes_db)
+
+
+def test_db_path_profile_wins_over_hermind_db_env(tmp_path):
+    home = tmp_path / "home"
+    profile_db = home / ".hermes" / "profiles" / "work" / "hermind.db"
+    _store_with_pending(profile_db)
+    env_db = tmp_path / "env.db"
+    _store_with_pending(env_db)
+    r = _cli("review", "--profile", "work", "--json", home=home, extra_env={"HERMIND_DB": str(env_db)})
+    d = json.loads(r.stdout)
+    assert r.returncode == 0 and d["ok"] and d["database"] == str(profile_db)
+
+
+@pytest.mark.parametrize("cmd", ["review", "audit-db"])
+def test_db_path_error_names_every_path_it_tried(tmp_path, cmd):
+    home = tmp_path / "home"
+    r = _cli(cmd, "--json", home=home)
+    d = json.loads(r.stdout)
+    assert r.returncode == 2 and not d["ok"]
+    assert str(home / ".hermes" / "hermind.db") in d["error"]
+    assert str(home / ".hermind" / "memory.db") in d["error"]
+    assert "--db" in d["error"] and "--profile" in d["error"]
 
 
 def test_config_and_authorize_key_carry_trust_writes(tmp_path):

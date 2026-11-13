@@ -10,7 +10,7 @@
 
 [English](README.md) · 繁體中文
 
-![version](https://img.shields.io/badge/version-1.0.1-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![version](https://img.shields.io/badge/version-1.0.2-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![deps](https://img.shields.io/badge/runtime%20deps-stdlib%20only-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 </div>
@@ -34,7 +34,7 @@
 **Hermes agent**（每輪對話前自動回想、每次回覆後自動記錄、審核佇列）：
 
 ```bash
-git clone --branch v1.0.1 https://github.com/fungane/hermind.git ~/hermind
+git clone --branch v1.0.2 https://github.com/fungane/hermind.git ~/hermind
 cd ~/hermind
 python3 hermind_cli.py install-hermes --dry-run     # 顯示會做甚麼；其他 profile 加 --profile NAME
 python3 hermind_cli.py install-hermes               # 先備份，再複製外掛，然後檢查結果
@@ -44,7 +44,7 @@ hermes config set memory.provider hermind           # 之後重新啟動 Hermes 
 **Claude Code、Cursor、Codex 和其他 MCP 客戶端**（需要 [uv](https://docs.astral.sh/uv/)）：
 
 ```bash
-claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp --write
+claude mcp add hermind -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind-mcp
 ```
 
 其他 20 多個客戶端的設定可以用 `hermind config CLIENT --write` 印出來（[docs/setup.md](docs/setup.md#mcp-clients)，英文）。
@@ -55,14 +55,14 @@ claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0
 **檢查一下，再在沒有 agent 的情況下試用：**
 
 ```bash
-uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind selftest     # 幾秒完成，不碰任何真實資料
-uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind remember "Atlas 的訂單用 PostgreSQL" --keywords "orders database 訂單 資料庫"
-uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind search "訂單用哪個資料庫"
+uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind selftest     # 幾秒完成，不碰任何真實資料
+uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind remember "Atlas 的訂單用 PostgreSQL" --keywords "orders database 訂單 資料庫"
+uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind search "訂單用哪個資料庫"
 ```
 
-`@v1.0.1` 固定安裝測試過的版本；要升級就改這個數字。下面的 `hermind` 代表整句
-`uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind`（或者用
-`uv tool install git+https://github.com/fungane/hermind@v1.0.1` 裝一次指令）。
+`@v1.0.2` 固定安裝測試過的版本；要升級就改這個數字。下面的 `hermind` 代表整句
+`uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind`（或者用
+`uv tool install git+https://github.com/fungane/hermind@v1.0.2` 裝一次指令）。
 
 ## 你的資料
 
@@ -102,10 +102,13 @@ SQLite 檔。
 
 | | |
 |---|---|
-| 安裝套件（wheel，沒有依賴） | 約 230 KB |
-| MCP 伺服器做完 20 次搜尋後 | 閒置約 29 MB 記憶體，尖峰 43 MB |
-| 資料庫 | 每 5,000 則短筆記約 5 MB |
-| 選用的語意搜尋（獨立的 worker，閒置 5 分鐘後自動結束） | 運行時 160 至 910 MB 記憶體，視乎模型 |
+| 安裝套件（wheel，沒有依賴） | 約 240 KB |
+| MCP 伺服器做完 20 次搜尋後 | 閒置約 29 MB 記憶體，尖峰約 40 MB |
+| 資料庫 | 每 5,000 則短筆記約 6 MB |
+| 選用的語意搜尋（獨立的 worker，閒置 5 分鐘後自動結束） | 運行時約 180 至 960 MB 記憶體，視乎模型 |
+
+以上 MCP 數字是 Python 伺服器程序本身；用上面的 `uvx` 指令啟動時，旁邊還會多一個小型的 `uv` 啟動程序（約 30 MB），
+改用 `uv tool install` 安裝再直接執行 `hermind-mcp` 就不會有這個額外程序。
 
 ## 運作原理
 

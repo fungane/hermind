@@ -474,6 +474,15 @@ def install_hermes(ns) -> dict:
     res: dict = {"ok": False, "hermes_home": str(home), "profile": ns.profile or "default", "dry_run": ns.dry_run,
                  "to_version": version(), "from_version": plugin_version(plugin), "steps": []}
     steps = res["steps"]
+    if ns.dry_run and not home.is_dir() and not ns.hermes_home and ns.profile in (None, "default"):
+        # checked ahead of "is this a checkout": with no Hermes at the default place a preview has nothing to preview,
+        # whether or not this is a checkout (an MCP-only install from a wheel is never one). An explicit --profile or
+        # --hermes-home that does not exist stays an error below: it is more likely a typo than "no Hermes".
+        res.update(ok=True, skipped=True,
+                   reason=f"Hermes was not found at {home}: see the \"Claude Code, Cursor, Codex and other MCP "
+                          "clients\" part of README.md's Install section for the route that does not need Hermes "
+                          "(use --hermes-home to point elsewhere if Hermes is installed somewhere else)")
+        return res
     if not (ROOT / "tools" / "deploy.sh").exists():
         res["error"] = "this is not a git checkout (tools/ is missing); clone --branch v{} https://github.com/fungane/hermind.git and run it from there".format(version())
         return res
@@ -583,6 +592,8 @@ def rollback_hermes(ns) -> dict:
 
 
 def install_text(d: dict) -> str:
+    if d.get("skipped"):
+        return f"SKIPPED  hermes home {d['hermes_home']} (dry run): {d['reason']}"
     lines = [("OK" if d["ok"] else "FAILED") + f"  hermes home {d['hermes_home']}" + (" (dry run)" if d.get("dry_run") else "")]
     if "from_version" in d:
         lines.append(f"  {d['from_version'] or 'not installed'} -> {d['to_version']}")
@@ -863,10 +874,42 @@ def authorize_key(ns) -> dict:
 # -- review and audit: the maintainer's side of the privacy controls ---------------------------------------------------
 
 
-def _db_path(ns) -> Path:
+def _db_candidates(ns) -> list[Path]:
+    """Every database path `review` and `audit-db` would use, in resolution order. --db or --profile, when given, is
+    the only candidate. Otherwise: the default Hermes home's database (what 1.0.1 used, so a Hermes user sees no
+    change), then $HERMIND_DB, then ~/.hermind/memory.db; the first that exists is used."""
     if getattr(ns, "db", None):
-        return Path(ns.db).expanduser()
-    return default_db_file(resolve_home(argparse.Namespace(hermes_home=None, profile=getattr(ns, "profile", None))))
+        return [Path(ns.db).expanduser()]
+    profile = getattr(ns, "profile", None)
+    if profile:
+        return [default_db_file(resolve_home(argparse.Namespace(hermes_home=None, profile=profile)))]
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from store_common import with_legacy_fallback
+    out = [default_db_file(resolve_home(argparse.Namespace(hermes_home=None, profile=None)))]
+    if os.environ.get("HERMIND_DB"):
+        out.append(with_legacy_fallback(Path(os.path.expanduser(os.environ["HERMIND_DB"]))))
+    out.append(Path(os.path.expanduser("~/.hermind/memory.db")))
+    seen: list[Path] = []
+    for p in out:
+        if p not in seen:
+            seen.append(p)
+    return seen
+
+
+def _db_path(ns) -> Path:
+    for path in _db_candidates(ns):
+        if path.exists():
+            return path
+    return _db_candidates(ns)[-1]
+
+
+def _db_not_found(ns) -> str:
+    candidates = _db_candidates(ns)
+    if len(candidates) == 1:
+        return f"{candidates[0]} does not exist: check --db / --profile"
+    tried = ", ".join(str(p) for p in candidates)
+    return f"no database found (tried, in order: {tried}): pass --db FILE or --profile NAME"
 
 
 def _ids(text: str) -> list[int]:
@@ -898,7 +941,7 @@ def _review_cmd(ns) -> dict:
     """List, confirm or reject the notes waiting in the review queue (what MCP agents and the LLM extractor wrote)."""
     db = _db_path(ns)
     if not db.exists():
-        return {"ok": False, "error": f"{db} does not exist: pass --profile or --db"}
+        return {"ok": False, "error": _db_not_found(ns)}
     sys.path.insert(0, str(ROOT))
     from store import DecisionStore
     store = DecisionStore(str(db))
@@ -950,7 +993,7 @@ def audit_db(ns) -> dict:
     Excerpts are shown with personal data masked; a note with a credential-like value is listed without any excerpt."""
     db = _db_path(ns)
     if not db.exists():
-        return {"ok": False, "error": f"{db} does not exist: pass --profile or --db"}
+        return {"ok": False, "error": _db_not_found(ns)}
     sys.path.insert(0, str(ROOT))
     import dbdriver
     from pii import find_pii, redact_pii
@@ -1608,7 +1651,9 @@ def _main(argv=None) -> int:
     s.add_argument("--write", action="store_true")
     s.add_argument("--remove", action="store_true")
     s.add_argument("--json", action="store_true")
-    s = sub.add_parser("review")
+    s = sub.add_parser("review", description="List, confirm or reject the notes waiting in the review queue. Database: "
+                       "--db or --profile if given, else the first that exists of the default Hermes home's database, "
+                       "$HERMIND_DB and ~/.hermind/memory.db.")
     s.add_argument("--profile")
     s.add_argument("--db")
     s.add_argument("--confirm", metavar="IDS|all")
@@ -1617,7 +1662,9 @@ def _main(argv=None) -> int:
     s.add_argument("--limit", type=int, default=50)
     s.add_argument("--chars", type=int, default=160)
     s.add_argument("--json", action="store_true")
-    s = sub.add_parser("audit-db")
+    s = sub.add_parser("audit-db", description="Read-only scan of a database for notes that look like they hold a "
+                       "credential or personal data. Database: --db or --profile if given, else the first that exists of "
+                       "the default Hermes home's database, $HERMIND_DB and ~/.hermind/memory.db.")
     s.add_argument("--profile")
     s.add_argument("--db")
     s.add_argument("--limit", type=int, default=50)
@@ -1686,7 +1733,7 @@ def _main(argv=None) -> int:
                                    "($HERMIND_VEC_HOME, else ~/.hermes/hermind-vec); delete it to remove everything. Needs the "
                                    "network once (PyPI and Hugging Face); afterwards nothing is sent anywhere.")
     s.add_argument("profile", nargs="?", default="default", choices=("default", "light", "balanced", "quality"),
-                   help="light: 52 MB, ~160 MB RAM; default: 118 MB, ~480 MB; balanced: 152 MB, ~600 MB; quality: 568 MB, ~910 MB")
+                   help="light: 52 MB, ~180 MB RAM; default: 118 MB, ~495 MB; balanced: 152 MB, ~610 MB; quality: 568 MB, ~960 MB")
     s.add_argument("--home", help="the folder (default $HERMIND_VEC_HOME or ~/.hermes/hermind-vec)")
     s.add_argument("--dry-run", action="store_true", help="show what would be downloaded and where, change nothing")
     s.add_argument("--json", action="store_true")

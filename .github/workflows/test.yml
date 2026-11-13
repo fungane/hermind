@@ -38,3 +38,25 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install pytest pyyaml
       - run: python -m pytest -q
+  install-smoke:
+    # Builds and installs the package the way a newcomer does, then walks the README's MCP-only route against the
+    # installed entry points (tests/test_install_smoke.py). The `test` job above only runs unit tests against the
+    # checkout's own modules, which is how the 1.0.1 `review` bug (see CHANGELOG.md, 1.0.2) went unnoticed.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
+        with:
+          python-version: "3.12"
+      # no action pinned by SHA for uv here (none known offline when this job was written): pip-install it instead
+      - run: python -m pip install pytest pyyaml uv
+      - run: python -m pytest -q tests/test_install_smoke.py
+        env:
+          HERMIND_INSTALL_SMOKE: "1"

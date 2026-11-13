@@ -20,11 +20,11 @@ to the user word for word; do not improvise a workaround.
 ## 0. Get the code
 
 ```bash
-git clone --branch v1.0.1 https://github.com/fungane/hermind.git ~/hermind && cd ~/hermind
+git clone --branch v1.0.2 https://github.com/fungane/hermind.git ~/hermind && cd ~/hermind
 ```
 
 The commands below are written as `python3 hermind_cli.py ...` from that folder. If Hermind was installed as a command
-(pip, pipx, `uv tool install`), write `hermind ...`; with uvx only, `uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind ...`. The checkout needs only Python 3.10 or newer; MCP clients that use `--source git`
+(pip, pipx, `uv tool install`), write `hermind ...`; with uvx only, `uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind ...`. The checkout needs only Python 3.10 or newer; MCP clients that use `--source git`
 also need [uv](https://docs.astral.sh/uv/).
 
 ## 1. Look first
@@ -67,6 +67,10 @@ To have an agent follow this runbook by itself whenever it hears "install Hermin
 python3 hermind_cli.py install-hermes --profile NAME --dry-run --json    # leave out --profile for the default profile
 python3 hermind_cli.py install-hermes --profile NAME --json              # backs up first and checks the result
 ```
+
+If the dry run's output has `"skipped": true`, Hermes is not installed for this profile: stop here (do not run the
+command again without `--dry-run`, it would just fail) and use 3b below instead, unless `--hermes-home` finds it
+somewhere else.
 
 This step is done when the output has `"ok": true` and `verify.files_identical` is true. When the profile already had a
 database, `verify.opens_database_copy` must be true as well (the field is absent on a first install). If `ok` is false,

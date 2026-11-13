@@ -14,10 +14,10 @@ from pathlib import Path
 
 
 # Ready-made model settings (sizes and memory measured on a 4-core server, model loaded and answering queries):
-#   default   multilingual-e5-small int8   118 MB file, about 480 MB RAM  (the original; keeps existing vectors)
-#   light     bekko-static-embedding-v1    52 MB file, about 160 MB RAM, embeds thousands of notes in seconds
-#   balanced  hs-embed-1 (Hindsight, MIT)   152 MB file, about 600 MB RAM, better Chinese/English recall than default
-#   quality   bge-m3 int8                   568 MB file, about 910 MB RAM, best recall in our tests, slow to index
+#   default   multilingual-e5-small int8   118 MB file, about 495 MB RAM  (the original; keeps existing vectors)
+#   light     bekko-static-embedding-v1    52 MB file, about 180 MB RAM, embeds thousands of notes in seconds
+#   balanced  hs-embed-1 (Hindsight, MIT)   152 MB file, about 610 MB RAM, better Chinese/English recall than default
+#   quality   bge-m3 int8                   568 MB file, about 960 MB RAM, best recall in our tests, slow to index
 # Each note keeps ONE vector (the table key is note_id): switching profile makes the old vectors unusable and the new
 # model replaces them as it embeds, so going back means embedding everything again. Back up the database first.
 PROFILES = {
@@ -61,6 +61,7 @@ class VectorIndex:
         self._lock = threading.Lock()
         self._fails = 0
         self._skip_until = 0.0
+        self._idle_timer: threading.Timer | None = None
 
     # -- process ------------------------------------------------------------------------------------------------
     def available(self) -> bool:
@@ -102,6 +103,7 @@ class VectorIndex:
                 if not resp or not resp.get("ok"):
                     raise RuntimeError((resp or {}).get("error", "worker exited"))
                 self._fails = 0
+                self._arm_idle_reap()
                 return resp
             except Exception:
                 self._fails += 1
@@ -111,7 +113,38 @@ class VectorIndex:
                     self._fails = 0
                 return None
 
+    def _arm_idle_reap(self) -> None:
+        """Wait() on the worker shortly after its own --idle timeout would have made it exit, so it never sits as a
+        defunct child between the idle exit and whatever search happens to come next (which might be a long time)."""
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+        proc = self._proc
+        if proc is None:
+            self._idle_timer = None
+            return
+        self._idle_timer = threading.Timer(self.idle + 2, self._reap_if_exited, args=(proc,))
+        self._idle_timer.daemon = True
+        self._idle_timer.start()
+
+    def _reap_if_exited(self, proc) -> None:
+        with self._lock:
+            if self._idle_timer is not threading.current_thread():
+                return                         # superseded by a newer timer (a later call re-armed): that one decides
+            self._idle_timer = None
+            if proc.poll() is None:            # still running (busy, or slow to exit): look again in a few seconds
+                if self._proc is proc:
+                    self._idle_timer = threading.Timer(5, self._reap_if_exited, args=(proc,))
+                    self._idle_timer.daemon = True
+                    self._idle_timer.start()
+                return
+            # poll() returned an exit code, so the child has been waited for: no defunct entry is left
+            if self._proc is proc:
+                self._proc = None
+
     def close(self) -> None:
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
         p, self._proc = self._proc, None
         if p is not None:
             try:

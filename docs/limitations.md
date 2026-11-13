@@ -54,7 +54,7 @@ What does not work well yet, and what to keep in mind.
 
 ## Resources
 
-- Vector search needs 160 to 910 MB of memory while the worker is awake (depends on the profile) and a 52 to 568 MB model
+- Vector search needs about 180 to 960 MB of memory while the worker is awake (depends on the profile) and a 52 to 568 MB model
   download.
 - **Large databases.** Measured on synthetic notes (random vocabulary, about 5 % near-duplicates) on one machine:
   consolidating 50,000 new notes took about 66 s and 100,000 about 170 s (peak memory about 250 MB, database about 123 MB,

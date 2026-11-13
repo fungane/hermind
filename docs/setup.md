@@ -21,13 +21,13 @@ Hermind is standard-library Python 3.10 or newer, with no runtime dependencies. 
 
 ```bash
 # MCP server: run straight from git (git URL form is pinned to the release tag), or from a checkout
-uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp --version
+uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind-mcp --version
 uvx --from /path/to/hermind hermind-mcp --version
-pipx install git+https://github.com/fungane/hermind@v1.0.1        # or: pip install .   (from a checkout)
+pipx install git+https://github.com/fungane/hermind@v1.0.2        # or: pip install .   (from a checkout)
 python hermind/hermind_mcp.py                                      # from a checkout, no install
 
 # Hermes plugin
-git clone --branch v1.0.1 https://github.com/fungane/hermind.git ~/hermind
+git clone --branch v1.0.2 https://github.com/fungane/hermind.git ~/hermind
 cd ~/hermind && python3 hermind_cli.py install-hermes --dry-run   # preview; add --profile NAME for a profile
 python3 hermind_cli.py install-hermes                              # backs up first, verifies after, prints a rollback
 hermes config set memory.provider hermind                          # first time only; then restart the Hermes gateway and app
@@ -68,7 +68,9 @@ stateless 2026-07-28 revision (`server/discover`, per-request `_meta`, no `initi
 **Read-only by default.** Only `memory_search`, `memory_get`, `memory_list` and `memory_related` are listed (about 1.9 KB
 of tool definitions). `--write` (or `HERMIND_MCP_WRITE=1`) also lists `memory_remember` and `memory_update` (about 2.8 KB):
 notes are saved at once, and only risky ones (instruction-like text, personal data, pin requests, edits of pinned notes)
-wait for `hermind review`. `memory_forget`, `memory_feedback`, `memory_review` and `memory_reflect` appear only when you
+wait for `hermind review` (no `--db` needed: it finds this same `~/.hermind/memory.db` / `$HERMIND_DB` on its own;
+if Hermes is also installed on this machine, its database comes first, so pass `--db ~/.hermind/memory.db`).
+`memory_forget`, `memory_feedback`, `memory_review` and `memory_reflect` appear only when you
 name them, and the ones that change notes need `--write` as well: `--write --tools search,get,remember,update,forget`.
 Write tools are refused if a client calls them without `--write`. `--write` and `HERMIND_MCP_WRITE=1` are the same
 switch; `hermind config` prints the environment form. Notes
@@ -94,8 +96,8 @@ server fails to start.
 ### Claude Code
 
 ```bash
-claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp
-claude mcp add hermind-rw -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp
+claude mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind-mcp
+claude mcp add hermind-rw -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind-mcp
 ```
 
 In `claude -p` (non-interactive) the tools must be allowed first, for example
@@ -116,7 +118,7 @@ merge it into `$DSH_HOME/cordis.patch.yml`; restart `dsh web` after editing):
         serverName: hermind
         transport: stdio
         command: uvx
-        args: ['--from', 'git+https://github.com/fungane/hermind@v1.0.1', 'hermind-mcp']
+        args: ['--from', 'git+https://github.com/fungane/hermind@v1.0.2', 'hermind-mcp']
         env:
           HERMIND_DB: /home/you/.hermind/memory.db
         toolCallTimeoutMs: 30000
@@ -135,7 +137,7 @@ Most clients use this `mcpServers` shape (add `"--write"` to `args` to allow wri
   "mcpServers": {
     "hermind": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"],
+      "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.2", "hermind-mcp"],
       "env": { "HERMIND_DB": "/home/you/.hermind/memory.db" }
     }
   }
@@ -149,7 +151,7 @@ Most clients use this `mcpServers` shape (add `"--write"` to `args` to allow wri
 | **Antigravity CLI** (`agy`, Google's replacement for Gemini CLI) | `~/.gemini/config/mcp_config.json` (all projects) or `.agents/mcp_config.json` (one project), under `mcpServers`; separate from `settings.json`. Its App and IDE use the same format, but their global path was not checked |
 | **Gemini CLI** (legacy; no longer served for Google AI Pro/Ultra and free accounts since 2026-06-18; API-key and Code Assist Standard/Enterprise users can keep it) | `~/.gemini/settings.json`, under `mcpServers` |
 | **Claude Desktop** (chat app, not Claude Code) | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows); restart the app. The app's own route for packaged servers is Settings → Extensions (`.mcpb` files); the config-file route was not re-checked on the newest build |
-| **Codex / ChatGPT desktop app** (CLI, IDE extension and the desktop app share one file) | `~/.codex/config.toml` (TOML, below) or `codex mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.1 hermind-mcp` |
+| **Codex / ChatGPT desktop app** (CLI, IDE extension and the desktop app share one file) | `~/.codex/config.toml` (TOML, below) or `codex mcp add hermind -- uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind-mcp` |
 | **Windsurf** (now Devin Desktop) | `~/.config/devin/mcp_config.json` (older versions: `~/.codeium/windsurf/mcp_config.json`) |
 | **Qwen Code** | `mcpServers` in `settings.json`, or `qwen mcp add` |
 | **Amp** | `amp.mcpServers` in `~/.config/amp/settings.json` (same `command` / `args` / `env` fields) |
@@ -172,23 +174,23 @@ These clients use a different shape:
 ```jsonc
 // VS Code / GitHub Copilot: .vscode/mcp.json (workspace) or your user profile
 { "servers": { "hermind": { "type": "stdio", "command": "uvx",
-    "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"] } } }
+    "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.2", "hermind-mcp"] } } }
 
 // Zed: settings.json
 { "context_servers": { "hermind": { "command": "uvx",
-    "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"], "env": {} } } }
+    "args": ["--from", "git+https://github.com/fungane/hermind@v1.0.2", "hermind-mcp"], "env": {} } } }
 
 // OpenCode: opencode.json or opencode.jsonc (command is one array, env is called "environment");
 // `opencode mcp add` writes the same block
 { "mcp": { "hermind": { "type": "local",
-    "command": ["uvx", "--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"],
+    "command": ["uvx", "--from", "git+https://github.com/fungane/hermind@v1.0.2", "hermind-mcp"],
     "environment": { "HERMIND_DB": "/home/you/.hermind/memory.db" } } } }
 ```
 
 ```json5
 // OpenClaw: openclaw.json
 { mcp: { servers: { hermind: { command: "uvx",
-    args: ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"] } } } }
+    args: ["--from", "git+https://github.com/fungane/hermind@v1.0.2", "hermind-mcp"] } } } }
 ```
 
 ```yaml
@@ -200,14 +202,14 @@ schema: v1
 mcpServers:
   - name: hermind
     command: uvx
-    args: ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"]
+    args: ["--from", "git+https://github.com/fungane/hermind@v1.0.2", "hermind-mcp"]
 ```
 
 ```toml
 # Codex / ChatGPT desktop app: ~/.codex/config.toml
 [mcp_servers.hermind]
 command = "uvx"
-args = ["--from", "git+https://github.com/fungane/hermind@v1.0.1", "hermind-mcp"]
+args = ["--from", "git+https://github.com/fungane/hermind@v1.0.2", "hermind-mcp"]
 
 [mcp_servers.hermind.env]
 HERMIND_DB = "/home/you/.hermind/memory.db"
@@ -395,6 +397,19 @@ hermes config set plugins.hermind.vectors.profile balanced
 For the MCP server, pass a config file: `hermind-mcp --config vectors.json` with
 `{"vectors": {"enabled": true, "profile": "balanced"}}` in it.
 
+**MCP only (no Hermes):** `setup-vectors` and `embed-all` work the same way without Hermes installed; only the config
+step above differs (a config file, not `hermes config set`):
+
+```bash
+hermind setup-vectors light                            # private venv + model in ~/.hermes/hermind-vec, even without Hermes
+hermind embed-all --db ~/.hermind/memory.db            # embed existing notes
+hermind-mcp --config vectors.json --write              # vectors.json: {"vectors": {"enabled": true, "profile": "light"}}
+```
+
+The vectors folder defaults to `~/.hermes/hermind-vec` and is created there whether or not Hermes is installed; `--home`
+(or `$HERMIND_VEC_HOME`) points `setup-vectors` and `embed-all` at another folder, and `setup-vectors --json` prints the
+folder it used or would use as `"home"`.
+
 `setup-vectors` needs the network once (PyPI for the worker's packages, Hugging Face for the model); every model is
 pinned to a revision and a checksum. `--dry-run` shows what would be downloaded and where. Everything goes into one
 folder (`$HERMIND_VEC_HOME` to choose another), with no cache elsewhere, so deleting it removes the semantic layer
@@ -407,12 +422,12 @@ Pick one model profile. All run locally on the CPU. Each note keeps one vector, 
 
 | Profile | Model | File | RAM while awake | Embedding 5,000 notes* |
 |---|---|---|---|---|
-| `default` | multilingual-e5-small (int8) | 118 MB | ~480 MB | ~8 min |
-| `light` | bekko-static-embedding-v1 | 52 MB | ~160 MB | seconds |
-| `balanced` | hs-embed-1 (Hindsight, MIT) | 152 MB | ~600 MB | ~3 min |
-| `quality` | bge-m3 (int8) | 568 MB | ~910 MB | ~30 min |
+| `default` | multilingual-e5-small (int8) | 118 MB | ~495 MB | about 12 s |
+| `light` | bekko-static-embedding-v1 | 52 MB | ~180 MB | about 1 s |
+| `balanced` | hs-embed-1 (Hindsight, MIT) | 152 MB | ~610 MB | about 17 s |
+| `quality` | bge-m3 (int8) | 568 MB | ~960 MB | about 2 min |
 
-\* On a 4-core server. The worker stops after 5 idle minutes and frees its memory. `default` stays the default so existing
+\* Short notes (about 80 characters) on a 4-core server; longer notes take proportionally longer. The worker stops after 5 idle minutes and frees its memory. `default` stays the default so existing
 installs keep their vectors. `quality` needs a longer wait per batch, which the profile already sets (`sec_per_note`).
 If the worker runs against an encrypted database, install `sqlcipher3` in its venv too (see
 [Encryption](privacy.md#encryption)). Semantic search is not supported on Windows yet ([limitations](limitations.md)).

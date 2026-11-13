@@ -16,3 +16,11 @@ What helps most:
 
 Replies can take a few days: issues are first looked at by an AI assistant that may draft a fix in a sandbox, and the
 maintainer reads and sends every reply. Linux and macOS are tested before every release; Windows is not supported yet.
+
+## Running the tests
+
+From a checkout: `uvx pytest -q` (needs [uv](https://docs.astral.sh/uv/)), or without it,
+`python -m pip install pytest pyyaml && python -m pytest -q`. Setting `HERMIND_INSTALL_SMOKE=1` also runs an install
+smoke test that builds and installs the package the way a newcomer does and walks the README's MCP-only route against
+it. With `uv` on `PATH` it needs the network the first time (uv fetches the build backend); without `uv` it falls back
+to `pip install --target`, which needs setuptools 77 or newer in the Python you run it with.

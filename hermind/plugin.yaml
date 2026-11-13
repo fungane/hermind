@@ -1,3 +1,3 @@
 name: hermind
-version: 1.0.1
+version: 1.0.2
 description: "Lightweight long-term memory for Hermes agents: one SQLite file, Cantonese/Chinese/English-aware BM25 + entity graph + consolidation, optional semantic search (separate embedding worker) and optional LLM extraction/rerank."

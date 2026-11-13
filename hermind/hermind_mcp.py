@@ -24,7 +24,7 @@ import re
 import sys
 from pathlib import Path
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 SERVER_NAME = "hermind"
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # first = preferred / answered to unknown versions
 DEFAULT_DB = "~/.hermind/memory.db"

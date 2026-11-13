@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.2
+
+Fixes from a newcomer's install test: MCP-only installs (no Hermes) now work the way the docs say. Nothing changes
+for an existing Hermes user who passes nothing new.
+
+- `review` and `audit-db` now find the MCP database when there is no Hermes database (`$HERMIND_DB`, then
+  `~/.hermind/memory.db`); with Hermes installed they use its database as before (pass `--db` for the MCP one). The
+  error, when none exists, names every path it tried.
+- `install-hermes --dry-run` says SKIPPED, not FAILED, when Hermes is not installed at the default place; a
+  `--profile` or `--hermes-home` that does not exist is still an error.
+- The semantic-search worker no longer stays a defunct process between its own idle exit and the next search.
+- An install smoke test runs on every push: it builds and installs the package the way a newcomer does and walks the
+  README's MCP-only route against the installed command, not the checkout.
+- Corrected the "How light is it?" numbers in the README and the semantic-search profile table in docs/setup.md from
+  a fresh measurement.
+- Docs: an "MCP only (no Hermes)" semantic-search example, a "Running the tests" section in CONTRIBUTING.md, and the
+  `claude mcp add` line now matches what `hermind config claude-code --write` prints.
+
 ## 1.0.1
 
 Windows only; nothing changes on Linux and macOS. Windows is still not supported, but the test suite now passes there

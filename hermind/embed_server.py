@@ -1,6 +1,6 @@
 """Embedding worker for hermind (runs in its OWN virtualenv with onnxruntime + numpy + tokenizers, so the
 Hermes environment stays untouched). Speaks one JSON object per line on stdin/stdout, exits after --idle seconds
-without a request (the ~450 MB model is then gone from RAM) and is started again on demand by vec.py.
+without a request (the model, about 180 to 960 MB depending on the profile, is then gone from RAM) and is started again on demand by vec.py.
 
 ops: {"op":"embed","prefix":"passage: ","texts":[...]}            -> {"ok":true,"dim":384,"vecs":"<base64 float32 n*dim>"}
      {"op":"search","query":"...","k":30,"prefix":"query: "}     -> {"ok":true,"hits":[[note_id, cosine], ...]}

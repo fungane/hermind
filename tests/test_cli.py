@@ -148,6 +148,39 @@ def test_install_refuses_a_missing_hermes_home(home, tmp_path):
     assert r.returncode != 0 and d["ok"] is False and "does not exist" in d["error"]
 
 
+def _bare_home(tmp_path):
+    h = tmp_path / "bare"                 # no ~/.hermes at all: Hermes is not installed
+    h.mkdir()
+    return h
+
+
+def test_install_dry_run_without_hermes_says_skipped_not_failed_json(tmp_path):
+    r = run("install-hermes", "--dry-run", "--json", home=_bare_home(tmp_path), check=0)
+    d = json.loads(r.stdout)
+    assert d["ok"] is True and d["skipped"] is True
+    assert "not found" in d["reason"] and "MCP" in d["reason"] and "README.md" in d["reason"]
+    assert "error" not in d
+
+
+def test_install_dry_run_without_hermes_says_skipped_not_failed_text(tmp_path):
+    r = run("install-hermes", "--dry-run", home=_bare_home(tmp_path), check=0)
+    assert r.stdout.startswith("SKIPPED")
+    assert "FAILED" not in r.stdout
+
+
+def test_install_dry_run_with_an_explicit_missing_target_still_fails(home, tmp_path):
+    # a --hermes-home or --profile that does not exist is more likely a typo than "no Hermes": keep the 1.0.1 error
+    r = run("install-hermes", "--hermes-home", str(tmp_path / "nowhere"), "--dry-run", "--json", home=home)
+    assert r.returncode == 2 and "does not exist" in json.loads(r.stdout)["error"]
+    r = run("install-hermes", "--profile", "wrok", "--dry-run", home=home)
+    assert r.returncode == 2 and r.stdout.startswith("FAILED")
+
+
+def test_install_dry_run_with_hermes_present_is_unaffected(home):
+    r = run("install-hermes", "--dry-run", home=home, check=0)
+    assert r.stdout.startswith("OK")
+
+
 def test_rollback_without_a_backup_is_an_error(home):
     r = run("install-hermes", "--rollback", "--json", home=home)
     assert r.returncode != 0 and "no plugin backup" in json.loads(r.stdout)["error"]
