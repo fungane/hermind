@@ -86,7 +86,7 @@ class SchemaMixin:
                              ("learned_terms", "TEXT NOT NULL DEFAULT ''"),
                              ("review", "TEXT NOT NULL DEFAULT 'active'"), ("valid_from", "REAL"),
                              ("shown_count", "REAL NOT NULL DEFAULT 0"), ("opened_count", "REAL NOT NULL DEFAULT 0"),
-                             ("fb_at", "REAL")):
+                             ("fb_at", "REAL"), ("project", "TEXT")):
                 if col not in cols:
                     try:
                         self.conn.execute(f"ALTER TABLE notes ADD COLUMN {col} {ddl}")
@@ -98,6 +98,7 @@ class SchemaMixin:
             CREATE INDEX IF NOT EXISTS notes_review ON notes(review) WHERE review != 'active';
             CREATE INDEX IF NOT EXISTS notes_scope ON notes(scope);
             CREATE INDEX IF NOT EXISTS notes_canonical ON notes(canonical_id);
+            CREATE INDEX IF NOT EXISTS notes_project ON notes(project) WHERE project IS NOT NULL;
             CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 key TEXT NOT NULL UNIQUE,
@@ -154,7 +155,8 @@ class SchemaMixin:
         """v0.1 -> v0.2: re-tokenise (normalisation/stemming changed), fill event dates, build the entity graph.
         v0.2 -> v0.3: only new columns/tables (trust, valid_to, tombstones), added in _init_schema.
         v0.3 -> v0.4: only new columns/tables (gen_keywords, learned_terms, learn_pending, meta) and indexes.
-        v4 -> v5: only new nullable/defaulted columns (review, valid_from, shown_count, opened_count, fb_at)."""
+        v4 -> v5: only new nullable/defaulted columns (review, valid_from, shown_count, opened_count, fb_at).
+        v5 -> v6: one new nullable column (project) and a partial index on it; no row is rewritten."""
         if version >= 2:
             with self._lock, self.conn:
                 self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

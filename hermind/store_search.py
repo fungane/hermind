@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from typing import Iterable
 
 try:
+    from .project import ProjectRule
     from .store_common import (
         B, BOOST_DIVISOR, DAY, EXPANSION_WEIGHT, FIELD_GEN, FIELD_LEARNED, FIELD_WEIGHT, K1,
         COMMON_FALLBACK_POSTINGS, KIND_WEIGHT, MAX_DF_FRACTION, MAX_MULTI_QUERIES, PENDING_WEIGHT, RECENCY_HALF_LIFE_DAYS, RE_CJK_CHAR,
@@ -17,6 +18,7 @@ try:
         tokenize, query_token_weights, query_term_factor
     )
 except ImportError:  # loaded as a top-level module (tools/)
+    from project import ProjectRule
     from store_common import (
         B, BOOST_DIVISOR, DAY, EXPANSION_WEIGHT, FIELD_GEN, FIELD_LEARNED, FIELD_WEIGHT, K1,
         COMMON_FALLBACK_POSTINGS, KIND_WEIGHT, MAX_DF_FRACTION, MAX_MULTI_QUERIES, PENDING_WEIGHT, RECENCY_HALF_LIFE_DAYS, RE_CJK_CHAR,
@@ -24,6 +26,22 @@ except ImportError:  # loaded as a top-level module (tools/)
         _now, _parse_when, _set_sim, hotness, numbers, query_time_window, sim_features, token_weight,
         tokenize, query_token_weights, query_term_factor
     )
+
+
+def _trust_factor(r) -> float:
+    """Low-trust notes (negative feedback) are demoted multiplicatively; trust 0.5 (the default) is neutral."""
+    return min(1.0, 0.6 + 0.8 * r["trust"])
+
+
+def _pending_factor(r, W) -> float:
+    """The review queue's weight for a note nobody confirmed yet; 1.0 when the weight is off or the note is confirmed."""
+    pw = float(W.get("pending", PENDING_WEIGHT))
+    return pw if pw != 1.0 and r["review"] == "pending" else 1.0
+
+
+def _recency_factor(at, now) -> float:
+    """Mild multiplicative recency decay (floor 0.85, 120-day half-life) so near-ties go to the newer note."""
+    return 0.85 + 0.15 * 0.5 ** (max(0.0, now - at) / DAY / RECENCY_HALF_LIFE_DAYS)
 
 
 class SearchMixin:
@@ -52,6 +70,60 @@ class SearchMixin:
                     if w > 0 and tok not in terms:
                         terms[tok] = (w, concept)
         return terms
+
+    def project_rule(self, project: str | None) -> ProjectRule | None:
+        """The demotion of other projects' notes for a session in *project*, built from the store's project_penalty and
+        project_penalty_kinds; None when it would change nothing (no project, a factor of 1, no kinds)."""
+        return ProjectRule.make(project, self.project_penalty, self.project_penalty_kinds, self.project_matcher, TRUST_DEFAULT)
+
+    def project_factors(self, ids: Iterable[int], project: str | None, combined: dict[int, float] | None = None) -> dict[int, float]:
+        """id -> project factor (only the ids that get one, below 1.0) for scores that are not made by search(): the
+        provider's fusion with the vector index, whose scores are rank sums. *combined* is the product of the multipliers
+        that fusion has already applied to each id (see _rescore for the floor); missing means 1.0. Reads rows, returns no
+        note, so nothing about a project reaches a result."""
+        rule, ids = self.project_rule(project), list(ids)
+        if rule is None or not ids:
+            return {}
+        combined = combined or {}
+        with self._lock:
+            info = self._fetch(ids)
+        out = {}
+        for i in ids:
+            r = info.get(i)
+            if r is not None:
+                f = rule.factor_of(r, combined.get(i, 1.0))
+                if f < 1.0:
+                    out[i] = f
+        return out
+
+    def project_combined(self, ids: Iterable[int], now: float | None = None, weights: dict | None = None) -> dict[int, float]:
+        """id -> the combined multiplier _rescore applies before the project penalty (trust, idle, pending, open-rate,
+        stale, recency), for notes that did not come through search() (vector-only hits). search() hands its own map to
+        the fusion as "project_mult", so a lexical hit that the floor spared is judged on exactly the product that spared
+        it; this recomputes the same product with the same helpers for the rest."""
+        ids = list(ids)
+        if not ids:
+            return {}
+        now = _now() if now is None else now
+        W = {**self.weights, **(weights or {})}
+        with self._lock:
+            info = self._fetch(ids)
+        stale = self.stale_ids(i for i in ids if i in info)
+        fb_scale = max(0.0, min(1.0, float(W.get("openrate", 1.0))))
+        base = self.open_rate_base() if fb_scale > 0 and any(info[i]["shown_count"] for i in info) else None
+        out = {}
+        for i in ids:
+            r = info.get(i)
+            if r is None:
+                out[i] = 1.0
+                continue
+            m = _trust_factor(r) * self._idle_factor(r, now) * _pending_factor(r, W)
+            if base is not None:
+                m *= open_rate_factor(r["shown_count"], r["opened_count"], r["fb_at"], now, base, FB_MAX_EFFECT * fb_scale)
+            if i in stale:
+                m *= STALE_PENALTY
+            out[i] = m * _recency_factor(r["event_at"] or r["created_at"], now)
+        return out
 
     def _scopes(self, scope: str | None) -> list[str] | None:
         """Scopes a read sees: the given (or the store's) scope plus 'shared'; None (no filter) for '*'."""
@@ -242,32 +314,54 @@ class SearchMixin:
             ok.append(i)
         return ok
 
-    def _rescore(self, fused, info, recency, now, W):
-        """Multiplicative adjustments after fusion: trust, idle decay, pending review, open-rate, stale, recency."""
+    def _rescore(self, fused, info, recency, now, W, rule=None, shared=None):
+        """Multiplicative adjustments after fusion: trust, idle decay, pending review, open-rate, stale, recency, and, last,
+        the project penalty (rule: a project.ProjectRule, only the automatic recall passes one).
+
+        The project penalty must not stack into hiding a note, so it is skipped for a note whose combined multiplier times
+        the penalty would fall under project.PROJECT_FLOOR. The combined multiplier of a note is the product of the factors
+        of every other adjustment above (trust, idle, pending, open-rate, stale, recency), taken from the same factors that
+        scale its score. *shared* (search's private cache) receives that product per note as "project_mult", so the
+        provider's vector fusion judges the floor on the same number instead of recomputing only the review weight.
+        Without a rule nothing is tracked and the result is exactly what it was before projects existed."""
+        mult: dict[int, float] | None = {i: 1.0 for i, _ in fused} if rule is not None else None
+
+        def apply(fused, factor_of):
+            out = []
+            for i, v in fused:
+                f = factor_of(i)
+                if mult is not None:
+                    mult[i] *= f
+                out.append((i, v * f))
+            return out
+
         # low-trust notes (negative feedback) are demoted multiplicatively; trust 0.5 (default) is neutral
-        fused = [(i, v * (min(1.0, 0.6 + 0.8 * info[i]["trust"]))) for i, v in fused]
-        fused = [(i, v * self._idle_factor(info[i], now)) for i, v in fused]
+        fused = apply(fused, lambda i: _trust_factor(info[i]))
+        fused = apply(fused, lambda i: self._idle_factor(info[i], now))
         pw = float(W.get("pending", PENDING_WEIGHT))
         if pw != 1.0:   # review queue: LLM-extracted notes nobody confirmed yet rank lower
-            fused = [(i, v * (pw if info[i]["review"] == "pending" else 1.0)) for i, v in fused]
+            fused = apply(fused, lambda i: _pending_factor(info[i], W))
         fb_scale = max(0.0, min(1.0, float(W.get("openrate", 1.0))))
         if fb_scale > 0 and any(info[i]["shown_count"] for i, _ in fused):
             base = self.open_rate_base()    # notes people open once shown drift up, ignored ones down (+-10% at most)
-            fused = [(i, v * open_rate_factor(info[i]["shown_count"], info[i]["opened_count"], info[i]["fb_at"],
-                                              now, base, FB_MAX_EFFECT * fb_scale)) for i, v in fused]
+            fused = apply(fused, lambda i: open_rate_factor(info[i]["shown_count"], info[i]["opened_count"], info[i]["fb_at"],
+                                                            now, base, FB_MAX_EFFECT * fb_scale))
         stale = self.stale_ids(i for i, _ in fused)
         if stale:
-            fused = [(i, v * (STALE_PENALTY if i in stale else 1.0)) for i, v in fused]
-        # mild multiplicative recency decay (floor 0.85, 120-day half-life) so near-ties go to the newer note
-        fused = sorted(((i, v * (0.85 + 0.15 * 0.5 ** (max(0.0, now - recency[i]) / DAY / RECENCY_HALF_LIFE_DAYS)))
-                        for i, v in fused), key=lambda x: -x[1])
-        return fused, stale
+            fused = apply(fused, lambda i: STALE_PENALTY if i in stale else 1.0)
+        fused = apply(fused, lambda i: _recency_factor(recency[i], now))
+        if rule is not None:    # notes of other projects rank lower (never hidden); before the sort, the diversity pass and the cut
+            fused = apply(fused, lambda i: rule.factor_of(info[i], mult[i]))
+            if shared is not None:
+                shared["project_mult"] = mult
+        return sorted(fused, key=lambda x: -x[1]), stale
 
     def search(self, query: str, limit: int = 5, kind: str | None = None, now: float | None = None, *,
                since=None, until=None, include_history: bool = False, weights: dict | None = None,
                explain: bool = False, fusion: str = "rrf", include_low_trust: bool = False,
                scope: str | None = None, tags: str | Iterable[str] = "", track: bool = True,
-               as_of=None, rare_fallback: bool = True, _shared: dict | None = None) -> list[dict]:
+               as_of=None, rare_fallback: bool = True, project: str | None = None,
+               _shared: dict | None = None) -> list[dict]:
         """Multi-signal retrieval fused with reciprocal rank fusion.
 
         Signals: bm25 (content+keywords, with query coverage), keywords (keyword/alias field only), entity (notes
@@ -276,12 +370,17 @@ class SearchMixin:
         recency, prior (kind weight x proof_count x pinned), trust (feedback above the default). since/until
         hard-filter on the note's event date (or creation date). Merged/superseded notes are hidden and credit their
         canonical note, unless include_history=True; notes with trust < 0.2 are hidden unless include_low_trust.
-        fusion="interleave" returns each candidate arm's #1, #2, ... in turn (used for dedup candidates).
+        fusion="interleave" returns each candidate arm's #1, #2, ... in turn (used for dedup candidates); it returns before
+        the rescoring, so a project argument is not applied there (the dedup caller passes none).
         rare_fallback=False: a query made only of very common words returns no lexical matches instead of scoring the rarest of them.
         scope: the store's scope by default (plus 'shared'); "*" = all scopes. tags: notes carrying all of them.
         as_of ('YYYY-MM-DD'): the notes that were valid on that day - valid_from <= day and (valid_to is NULL or
         day < valid_to), valid_from falling back to the creation time - including superseded versions that were
-        current then (merged duplicates still fold into their canonical note)."""
+        current then (merged duplicates still fold into their canonical note).
+        project: the current project (project.py), passed by the automatic recall only. Notes of another project that are
+        of a listed kind (project_penalty_kinds), not pinned and not used or confirmed are multiplied by project_penalty
+        in the rescoring, so they leave the top *limit* before the cut; see _rescore for the floor. None (the default,
+        and what every explicit tool passes) leaves the ranking exactly as it was."""
         now = _now() if now is None else now
         as_end = day_bounds(as_of)[1] if as_of not in (None, "") else None
         keep_status = ("active", "superseded") if as_end is not None else ("active",)
@@ -375,7 +474,7 @@ class SearchMixin:
             fused = self._interleave([lists[a] for a in SOURCE_ARMS])
             return [self._row(info[i]) | {"score": 0.0} for i, _ in fused[:max(1, int(limit))]]
         fused = self._rrf(lists, W, kconst, self.boost)
-        fused, stale = self._rescore(fused, info, recency, now, W)
+        fused, stale = self._rescore(fused, info, recency, now, W, self.project_rule(project), shared=_shared)
         ordered = self._diversify(fused, info, limit, float(W.get("diversity", 0.6)))
         out = []
         if track:
@@ -391,18 +490,20 @@ class SearchMixin:
         return out
 
     def search_multi(self, queries: Iterable[str], limit: int = 5, now: float | None = None, *,
-                     weights: dict | None = None, explain: bool = False, **filters) -> list[dict]:
+                     weights: dict | None = None, explain: bool = False, project: str | None = None,
+                     **filters) -> list[dict]:
         """Search several phrasings of one question (the first is the user's original wording; the others are
         rewrites by the calling agent, e.g. written Chinese / English / answer keywords) and fuse the per-query
         rankings with weighted RRF: the original counts multi_original (1.5), each rewrite 1.0. Results are deduped
-        by id; filters (kind, since, until, include_history, scope, tags, ...) apply to every query."""
+        by id; filters (kind, since, until, include_history, scope, tags, ...) apply to every query. project is handed to
+        every per-query search (see search): each query's list is penalised before its pool is cut."""
         qs = list(dict.fromkeys(" ".join(str(q).split()) for q in (queries or ()) if q and str(q).strip()))
         qs = qs[:MAX_MULTI_QUERIES]
         if not qs:
             return []
         now = _now() if now is None else now
         if len(qs) == 1:
-            return self.search(qs[0], limit=limit, now=now, weights=weights, explain=explain, **filters)
+            return self.search(qs[0], limit=limit, now=now, weights=weights, explain=explain, project=project, **filters)
         W = {**self.weights, **(weights or {})}
         kconst, pool = float(W["multi_k"]), max(int(limit), int(W["multi_pool"]))
         # per-query lists skip the MMR diversity pass (O(n^2)); it runs once on the fused list instead
@@ -429,7 +530,7 @@ class SearchMixin:
         for qi, q in enumerate(qs):
             w = float(W["multi_original"]) if qi == 0 else 1.0
             for rank, h in enumerate(self.search(q, limit=pool, now=now, weights=sub_w, explain=explain,
-                                                 track=False, _shared=shared, **filters)):
+                                                 track=False, project=project, _shared=shared, **filters)):
                 fused[h["id"]] += w / (kconst + rank + 1)
                 rows.setdefault(h["id"], h)
                 ranks[h["id"]][qi] = rank + 1

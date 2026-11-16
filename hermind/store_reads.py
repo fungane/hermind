@@ -62,11 +62,17 @@ class ReadMixin:
         return {"notes": sum(status.values()), "by_status": status, "active_by_kind": kinds, "entities": ents,
                 "entity_links": links}
 
+    def known_projects(self) -> list[str]:
+        """The distinct project values stored on notes (internal; see project.py), oldest first. Reads the partial index only."""
+        with self._lock:
+            return [r[0] for r in self.conn.execute(
+                "SELECT project FROM notes WHERE project IS NOT NULL GROUP BY project ORDER BY MIN(id)")]
+
     @staticmethod
     def _row(r: sqlite3.Row) -> dict:
         d = {k: r[k] for k in ("id", "content", "kind", "keywords", "created_at", "expires_at", "source_session",
                                "pinned")}
-        keys = r.keys()
+        keys = r.keys()   # an allow-list: the internal `project` column is never copied into a note
         for k in ("status", "canonical_id", "proof_count", "event_at", "trust", "valid_to", "candidate", "scope", "tags",
                   "access_count", "last_access", "gen_keywords", "gen_at", "gen_model", "learned_terms", "review", "valid_from",
                   "shown_count", "opened_count", "fb_at", "locked"):

@@ -63,6 +63,7 @@ def test_every_row_of_notes_appears_once_and_every_column_equals_the_database(tm
     assert [o["id"] for o in out] == [w["id"] for w in want]           # once each, ordered by id
     assert len(want) == 13
     for o, w in zip(out, want):
+        w = {col: value for col, value in w.items() if col != "project"}   # the project (a path) stays in the database
         for col, value in w.items():
             assert o[col] == value and type(o[col]) is type(value), (w["id"], col)
         assert set(o) == set(w) | {"entities", "links"}                # nothing else is added

@@ -10,7 +10,7 @@
 
 [English](README.md) · 繁體中文
 
-![version](https://img.shields.io/badge/version-1.0.2-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![version](https://img.shields.io/badge/version-1.1.0-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![deps](https://img.shields.io/badge/runtime%20deps-stdlib%20only-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 </div>
@@ -34,7 +34,7 @@
 **Hermes agent**（每輪對話前自動回想、每次回覆後自動記錄、審核佇列）：
 
 ```bash
-git clone --branch v1.0.2 https://github.com/fungane/hermind.git ~/hermind
+git clone --branch v1.1.0 https://github.com/fungane/hermind.git ~/hermind
 cd ~/hermind
 python3 hermind_cli.py install-hermes --dry-run     # 顯示會做甚麼；其他 profile 加 --profile NAME
 python3 hermind_cli.py install-hermes               # 先備份，再複製外掛，然後檢查結果
@@ -44,7 +44,7 @@ hermes config set memory.provider hermind           # 之後重新啟動 Hermes 
 **Claude Code、Cursor、Codex 和其他 MCP 客戶端**（需要 [uv](https://docs.astral.sh/uv/)）：
 
 ```bash
-claude mcp add hermind -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind-mcp
+claude mcp add hermind -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.1.0 hermind-mcp
 ```
 
 其他 20 多個客戶端的設定可以用 `hermind config CLIENT --write` 印出來（[docs/setup.md](docs/setup.md#mcp-clients)，英文）。
@@ -55,14 +55,14 @@ claude mcp add hermind -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.c
 **檢查一下，再在沒有 agent 的情況下試用：**
 
 ```bash
-uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind selftest     # 幾秒完成，不碰任何真實資料
-uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind remember "Atlas 的訂單用 PostgreSQL" --keywords "orders database 訂單 資料庫"
-uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind search "訂單用哪個資料庫"
+uvx --from git+https://github.com/fungane/hermind@v1.1.0 hermind selftest     # 幾秒完成，不碰任何真實資料
+uvx --from git+https://github.com/fungane/hermind@v1.1.0 hermind remember "Atlas 的訂單用 PostgreSQL" --keywords "orders database 訂單 資料庫"
+uvx --from git+https://github.com/fungane/hermind@v1.1.0 hermind search "訂單用哪個資料庫"
 ```
 
-`@v1.0.2` 固定安裝測試過的版本；要升級就改這個數字。下面的 `hermind` 代表整句
-`uvx --from git+https://github.com/fungane/hermind@v1.0.2 hermind`（或者用
-`uv tool install git+https://github.com/fungane/hermind@v1.0.2` 裝一次指令）。
+`@v1.1.0` 固定安裝測試過的版本；要升級就改這個數字。下面的 `hermind` 代表整句
+`uvx --from git+https://github.com/fungane/hermind@v1.1.0 hermind`（或者用
+`uv tool install git+https://github.com/fungane/hermind@v1.1.0` 裝一次指令）。
 
 ## 你的資料
 
@@ -83,6 +83,26 @@ SQLite 檔。
 - **升級**前會先複製資料庫（`memory.db.bak-v<N>-...`，保留最新三份）；複製失敗就不會升級。
 
 詳情：[docs/import-export.md](docs/import-export.md)（英文）。
+
+### 專案
+
+使用 Hermes 外掛時，每則筆記都會記住它是在哪個專案寫下的，也就是該次工作階段的工作目錄（你的家目錄、檔案系統根目錄，
+以及放着多個專案的上層資料夾，都算沒有專案）。專案只存在資料庫內部，不會出現在任何結果中，也不會被匯出。
+
+- **有甚麼改變：**自動回憶時，在另一個專案寫下的 `chat` 和 `summary` 筆記排名較低（乘以 0.5；開啟語意搜尋時，同時出現在向量結果的筆記會再乘一次，合計 0.25），但不會被隱藏。釘選的筆記、
+  你打開過或確認過的筆記，以及技術事實、決定和偏好，一律不會被降低。沒有專案的工作階段或筆記也不會被降低；明確的搜尋
+  （`memory_search`、`hermind search`、MCP 伺服器）完全不變。
+- **設定**（`plugins.hermind`）：`project_penalty`（`0.5`；設為 `1.0` 即關閉）和 `project_penalty_kinds`（`chat,summary`）。
+- **升級前寫下的筆記**沒有專案。你可以用一個對照檔為它們補上；這個檔案由你自己產生（Hermind 不會讀取 Hermes 自己的資料庫），
+  內容是工作階段編號對應工作目錄：
+
+  ```
+  echo '{"20260301_093000_ab12cd": "/home/you/work/atlas"}' > projects.json
+  hermind import-projects projects.json --dry-run     # 只顯示數字，不寫入任何東西，連備份也不做
+  hermind import-projects projects.json               # 先備份，再為沒有專案的筆記補上
+  ```
+
+  只有沒有專案的筆記會被補上，資料庫內其他一切都不變。可以隨時再執行一次。
 
 ## 為甚麼用 Hermind
 

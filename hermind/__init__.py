@@ -46,6 +46,7 @@ try:
     from .screen import (CONTEXT_TAG, clean_prompt, has_text_outside_private, looks_masked_secret, looks_secret, strip_injected,
                          strip_private, write_flag)
     from .pii import find_pii as _find_pii
+    from .project import project_for
     from .store import KINDS, LEARN_WINDOW_SECONDS, PENDING_WEIGHT, DecisionStore, RefusedWrite, day_bounds, l0
     from .store_common import default_db_file, explicit_never_expires
     from .store_writes import clean_entities
@@ -54,6 +55,7 @@ except ImportError:  # loaded as a top-level module (e.g. pytest collecting the 
     from screen import (CONTEXT_TAG, clean_prompt, has_text_outside_private, looks_masked_secret, looks_secret, strip_injected,
                         strip_private, write_flag)
     from pii import find_pii as _find_pii
+    from project import project_for
     from store import KINDS, LEARN_WINDOW_SECONDS, PENDING_WEIGHT, DecisionStore, RefusedWrite, day_bounds, l0
     from store_common import default_db_file, explicit_never_expires
     from store_writes import clean_entities
@@ -111,6 +113,8 @@ _DEFAULTS = {
     "prefetch_line_chars": 60,          # characters per recalled note line (the hook for non-Hermes agents uses 200)
     "core_summary_chars": 3500,         # pinned notes + trusted preferences in the system prompt (0 = off)
     "review_queue": True,               # LLM-extracted notes start as [pending] until confirmed (memory_review)
+    "project_penalty": 0.5,             # automatic recall: factor for chat/summary notes written in another project (1.0 = off)
+    "project_penalty_kinds": "chat,summary",   # the kinds that factor applies to ("" = none); pinned and used notes are never demoted
 }
 L0_CHARS, L1_CHARS = 60, 200
 
@@ -437,6 +441,7 @@ class HermindProvider(MemoryProvider):
         self._writable = True
         self._skip = False
         self._platform = ""
+        self._project: str | None = None   # the session's working directory as a project (project.py); None = neutral
         self._lock = threading.RLock()
         self._last_count: int | None = None
         self._prefetch_warned: set[str] = set()      # error classes of a failed recall already logged at WARNING
@@ -504,9 +509,14 @@ class HermindProvider(MemoryProvider):
         return VectorIndex(cfg, db_path)
 
     def _vector_fuse(self, queries: list, notes: list, limit: int, filters: dict, *, index: bool = True,
-                     timeout: float | None = None) -> list:
+                     timeout: float | None = None, project: str | None = None,
+                     combined: dict[int, float] | None = None) -> list:
         """Add the embedding worker's nearest notes to the lexical results and fuse both rankings (RRF, k=60).
-        index=False skips embedding new notes first (the automatic recall must stay fast)."""
+        index=False skips embedding new notes first (the automatic recall must stay fast).
+        project (the automatic recall only): the fused score of a note of another project is demoted by the same rule as
+        in search() for lexical and vector-only hits alike, so a vector hit cannot bring it back to the top. The floor
+        there is judged on the combined multiplier search() already applied to that note (passed as *combined*, the
+        private "project_mult" of its shared cache); vector-only hits get the same product computed by the store."""
         try:
             if index:
                 self._vec.index_missing(self._store, 32)
@@ -532,6 +542,13 @@ class HermindProvider(MemoryProvider):
             for i in score:   # the review queue's down-weight must also hold for vector-only hits
                 if by[i].get("review") == "pending":
                     score[i] *= PENDING_WEIGHT
+            if project and self._store.project_rule(project) is not None:
+                multiplier = dict(combined or {})
+                missing = [i for i in score if i not in multiplier]
+                if missing:
+                    multiplier.update(self._store.project_combined(missing))
+                for i, f in self._store.project_factors(list(score), project, multiplier).items():
+                    score[i] *= f
             return [by[i] for i, _ in sorted(score.items(), key=lambda x: -x[1])]
         except Exception:
             return notes
@@ -594,14 +611,26 @@ class HermindProvider(MemoryProvider):
                                     synonyms_path=self._config.get("synonyms_path") or None,
                                     weights=weights,
                                     boost=_parse_boost(self._config.get("search_boost")),
-                                    scope=self._scope(str(hermes_home), kwargs), track_access=True)
+                                    scope=self._scope(str(hermes_home), kwargs), track_access=True,
+                                    project_penalty=self._config.get("project_penalty"),
+                                    project_penalty_kinds=self._config.get("project_penalty_kinds"))
         self._llm = self._make_llm()
         self._vec = self._make_vec(self._db_path(str(hermes_home)))
+        self._project = self._resolve_project(kwargs.get("cwd"))
         try:
             self._store.maintenance(consolidate=_truthy(self._config.get("consolidate_on_init", True))
                                     and self._writable)
         except Exception as exc:  # pragma: no cover
             logger.debug("hermind maintenance failed: %s", exc)
+
+    def _resolve_project(self, cwd) -> str | None:
+        """The project for this provider's lifetime (on_session_switch carries no cwd and keeps it). Never raises: any
+        problem means no project, which behaves exactly as before projects existed."""
+        try:
+            return project_for(cwd, self._store.known_projects, matcher=self._store.project_matcher)
+        except Exception as exc:
+            logger.debug("hermind project lookup failed: %s", type(exc).__name__)
+            return None
 
     def shutdown(self) -> None:
         if self._vec is not None:
@@ -688,13 +717,15 @@ class HermindProvider(MemoryProvider):
         n = max(3, min(limit, 5))
         use_vec = (self._vec is not None and self._vec.available()
                    and _truthy(self._config.get("prefetch_vectors", True)))
+        shared: dict = {}      # search() records the combined multiplier behind each project penalty here
         with self._lock:
-            notes = self._store.search(query, limit=10 if use_vec else n)
+            notes = self._store.search(query, limit=10 if use_vec else n, project=self._project, _shared=shared)
         if use_vec:
             # Lexical recall alone ranks chatty prompts by their generic words ("排查 問題"); the embedding worker
             # (~1 s cold, ~20 ms warm) pulls the topical notes back. Any failure or timeout keeps the lexical list.
             notes = self._vector_fuse([query], notes, n, {}, index=False,
-                                      timeout=float(self._config.get("prefetch_vector_timeout", 3.0) or 3.0))
+                                      timeout=float(self._config.get("prefetch_vector_timeout", 3.0) or 3.0),
+                                      project=self._project, combined=shared.get("project_mult"))
         notes = notes[:n]
         self._log_listing("search", [n["id"] for n in notes], source="auto", query=query, n_results=len(notes))
         budget = int(self._config.get("prefetch_chars", 1200) or 1200)
@@ -773,7 +804,7 @@ class HermindProvider(MemoryProvider):
             if self._store is None:
                 return None
             try:
-                nid, created = self._store.add(chunk, kind="chat", source_session=sid,
+                nid, created = self._store.add(chunk, kind="chat", source_session=sid, project=self._project,
                                                dedup_threshold=float(self._config.get("dedup_threshold", 0.85)))
             except RefusedWrite:  # forgotten earlier
                 return None
@@ -805,7 +836,7 @@ class HermindProvider(MemoryProvider):
                     if self._store is not None:
                         self._store.add(f["text"], kind=kind, keywords=" ".join(f["aliases"]), source_session=sid,
                                         dedup_threshold=float(self._config.get("dedup_threshold", 0.85)),
-                                        review=review)
+                                        review=review, project=self._project)
             except (RefusedWrite, ValueError):
                 continue
         self._bg_index()
@@ -907,7 +938,7 @@ class HermindProvider(MemoryProvider):
                 try:
                     with self._lock:
                         nid, created = self._store.add(text, kind="chat", source_session=self._session_id,
-                                                       candidate=True, dedup_threshold=0.8)
+                                                       candidate=True, dedup_threshold=0.8, project=self._project)
                     if created:
                         saved.append(nid)
                 except (RefusedWrite, ValueError):
@@ -937,7 +968,7 @@ class HermindProvider(MemoryProvider):
                 if action == "replace" and old:
                     self._store.update(old, content)
                     return
-                self._store.add(content, kind=kind, source_session=src, pinned=True)
+                self._store.add(content, kind=kind, source_session=src, pinned=True, project=self._project)
         except Exception as exc:
             logger.debug("hermind on_memory_write failed: %s", exc)
 
@@ -1007,7 +1038,8 @@ class HermindProvider(MemoryProvider):
                                        reset_expiry=not self._config.get("remember_review"),   # an untrusted writer (MCP without --trust-writes) never changes an existing note's expiry
                                        entities=ents, tags=str(a.get("tags") or ""),
                                        review="pending" if hold else "active",
-                                       valid_from=a.get("valid_from") or None, valid_to=a.get("valid_to") or None)
+                                       valid_from=a.get("valid_from") or None, valid_to=a.get("valid_to") or None,
+                                       project=self._project)
         if not created and keywords.strip():
             existing = self._store.get(nid)
             merged = " ".join(dict.fromkeys((existing["keywords"] + " " + keywords).split()))

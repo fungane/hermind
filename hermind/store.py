@@ -28,6 +28,7 @@ from pathlib import Path
 
 try:
     from . import dbdriver, store_common as _common
+    from .project import PROJECT_PENALTY, PROJECT_PENALTY_KINDS, ProjectMatcher, parse_kinds, parse_penalty
     from .store_aux import AuxMixin
     from .store_common import *  # noqa: F401,F403
     from .store_common import Synonyms, _clean_scope, _now, load_synonyms, os, DEFAULT_BOOST, DEFAULT_WEIGHTS
@@ -43,6 +44,7 @@ try:
 except ImportError:  # loaded as a top-level module (tools/, import_hindsight.py)
     import dbdriver
     import store_common as _common
+    from project import PROJECT_PENALTY, PROJECT_PENALTY_KINDS, ProjectMatcher, parse_kinds, parse_penalty
     from store_aux import AuxMixin
     from store_common import *  # noqa: F401,F403
     from store_common import Synonyms, _clean_scope, _now, load_synonyms, os, DEFAULT_BOOST, DEFAULT_WEIGHTS
@@ -68,7 +70,7 @@ class DecisionStore(SchemaMixin, AuxMixin, EntityMixin, WriteMixin, ConsolidateM
 
     def __init__(self, db_path: str, synonyms_path: str | None = None, weights: dict | None = None,
                  boost: dict | None = None, scope: str = "default", track_access: bool = False,
-                 key: str | None = None):
+                 key: str | None = None, project_penalty=None, project_penalty_kinds=None):
         self.db_path = str(db_path)
         self._key = key                       # kept for the backup made before a schema upgrade
         if self.db_path != ":memory:":
@@ -93,6 +95,10 @@ class DecisionStore(SchemaMixin, AuxMixin, EntityMixin, WriteMixin, ConsolidateM
         self.weights = {**DEFAULT_WEIGHTS, **(weights or {})}
         self.boost = {**DEFAULT_BOOST, **(boost or {})}
         self.scope = _clean_scope(scope)
+        # automatic recall only (search(project=...)): factor and kinds of the demotion of other projects' notes, see project.py
+        self.project_penalty = PROJECT_PENALTY if project_penalty is None else parse_penalty(project_penalty)
+        self.project_penalty_kinds = parse_kinds(project_penalty_kinds)
+        self.project_matcher = ProjectMatcher()
         # access tracking (OpenViking lifecycle): returned ids are buffered and written in one batch at most every
         # ACCESS_FLUSH_SECONDS (and on close), so searching does not cause a write per query.
         self.track_access = track_access

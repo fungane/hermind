@@ -2,7 +2,7 @@
 """hermind: check, install and wire up Hermind. Standard library only; every command can answer in JSON.
 
 Built so that an AI agent can set Hermind up without guessing. Every command reports facts, changes nothing unless it is
-install-hermes (and that one backs up first and has --dry-run and --rollback), and exits 0 on success, 1 on a failed
+install-hermes and import-projects (both back up first and have --dry-run), and exits 0 on success, 1 on a failed
 check, 2 on a usage or environment error.
 
     hermind doctor [--json]                      what is installed where, what is missing, what to do next
@@ -14,6 +14,7 @@ check, 2 on a usage or environment error.
     hermind install-hook [--db FILE | --db-from-profile NAME] [--write | --remove]     automatic recall in Claude Code (preview first)
     hermind review [--profile NAME | --db FILE] [--confirm IDS|all] [--reject IDS]   notes an agent wrote wait here for you
     hermind audit-db [--profile NAME | --db FILE] [--fail-on-findings]               read-only scan for credentials and personal data
+    hermind import-projects FILE.json [--profile NAME | --db FILE] [--dry-run] [--json] [--show-projects]   give older notes the project of their session
     hermind questions [--json]                   the questions to ask the user BEFORE installing, built from what is detected here
     hermind install-skill [--target hermes|claude-code|both] [--dry-run]   teach an agent to start from those questions
 
@@ -129,7 +130,7 @@ def default_db_file(home) -> Path:
 GIT_REPO = "git+https://github.com/fungane/hermind"
 PLAIN_MAGIC = b"SQLite format 3\x00"
 
-RUNTIME_FILES = ["__init__.py", "llm.py", "pii.py", "dbdriver.py", "vec.py", "textnorm.py", "screen.py", "embed_server.py",
+RUNTIME_FILES = ["__init__.py", "llm.py", "pii.py", "project.py", "dbdriver.py", "vec.py", "textnorm.py", "screen.py", "embed_server.py",
                  "import_hindsight.py", "db_backup.py", "vec_setup.py", "import_core.py", "import_readers.py", "md_notes.py", "text_blocks.py", "export_notes.py", "md_export.py", "reader_hermind_json.py", "reader_claude_code.py", "reader_exports.py", "synonyms.yaml", "plugin.yaml", "README.md"]   # plus store*.py; same list as tools/deploy.sh
 
 
@@ -1078,6 +1079,176 @@ def audit_text(d: dict) -> str:
     return "\n".join(lines)
 
 
+# -- import-projects: the project of notes written before notes remembered one ---------------------------------------
+
+PROJECT_STATUSES = ("active", "superseded", "merged")   # live notes and the history of a note; a note waiting in the review queue is active, rejected ones are left out
+
+
+def _read_session_map(path: str) -> tuple[dict | None, str | None]:
+    """FILE as {session id: working directory}, or (None, one-line reason) when it is not usable. A session id must not
+    be empty or whitespace: notes saved by a CLI or MCP client without a session have source_session='', so one empty key
+    would relabel all of them. A working directory must be absolute after expanding ~; a relative one would silently mean
+    a different directory on every run, and the notes would be demoted as another project instead of getting one. An
+    empty or whitespace value stays neutral (`project.normalize` rejects it), as for any other note."""
+    try:
+        raw = Path(path).expanduser().read_bytes()
+    except OSError as exc:
+        return None, f"cannot read {path}: {exc.strerror or exc}"
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return None, f"{path} is not valid JSON ({type(exc).__name__}: {str(exc)[:100]})"
+    if not isinstance(data, dict):
+        return None, f"{path} must be a JSON object of the form {{\"<session id>\": \"<working directory>\", ...}}, not {type(data).__name__}"
+    bad = [k for k, v in data.items() if not isinstance(v, str)]
+    if bad:
+        return None, f"{path}: every value must be a string (a working directory); {len(bad)} are not (first key: {bad[0]!r})"
+    empty = [k for k in data if not k.strip()]
+    if empty:
+        return None, (f"{path}: a session id must not be empty or whitespace ({len(empty)} such key(s)): notes saved "
+                      "without a session share one empty id, so any directory would be given to all of them")
+    relative = [k for k, v in data.items() if v.strip() and not os.path.isabs(os.path.expanduser(v))]
+    if relative:
+        names = ", ".join(repr(k) for k in relative[:5]) + (f" and {len(relative) - 5} more" if len(relative) > 5 else "")
+        return None, (f"{path}: the working directory must be an absolute path (expand ~ or make it absolute yourself); "
+                      f"relative for session id(s): {names}")
+    return {k: os.path.expanduser(v) for k, v in data.items()}, None
+
+
+def _open_read_only(db: Path):
+    import dbdriver
+    # A read-only open of a write-ahead-log database creates its -wal and -shm files when they are missing, even in
+    # mode=ro. With none of them present nobody has the database open, so it can be read as an immutable file and nothing
+    # is created next to it. This matters for --dry-run: it must leave an encrypted database exactly as it found it.
+    idle = not any(Path(str(db) + ext).exists() for ext in ("-wal", "-shm", "-journal"))
+    uri = f"{db.resolve().as_uri()}?mode=ro" + ("&immutable=1" if idle else "")
+    if dbdriver.is_plaintext_file(db):
+        return sqlite3.connect(uri, uri=True, timeout=5)
+    key = dbdriver.key_from_env()
+    if key is None:
+        raise dbdriver.EncryptionError(f"{db} is encrypted (or is not a SQLite database at all): if it is encrypted, "
+                                       "set HERMIND_DB_KEY_FILE (or HERMIND_DB_KEY) to its key")
+    return dbdriver.connect(uri, key=key, uri=True)
+
+
+def _plan_projects(con, mapping: dict) -> dict:
+    """What `import-projects` would do, from a read-only look: nothing is written. Notes of a session in *mapping* with no
+    project get the project the provider would give them (project.project_for), computed against the projects already
+    stored plus the ones this file would set."""
+    from project import normalize, project_for
+    cols = {r[1] for r in con.execute("PRAGMA table_info(notes)")}
+    if not {"id", "source_session", "status"} <= cols:
+        raise sqlite3.DatabaseError("this is not a Hermind database (no notes table with source_session and status)")
+    has_project = "project" in cols
+    marks = ",".join("?" * len(PROJECT_STATUSES))
+    examined = skipped = 0
+    seen: set[str] = set()                       # sessions of the file that have a note
+    eligible: dict[str, list[int]] = {}          # session -> ids of its notes with no project yet
+    for nid, sess, proj in con.execute(
+            f"SELECT id, source_session, {'project' if has_project else 'NULL'} FROM notes "
+            f"WHERE status IN ({marks}) AND source_session IS NOT NULL ORDER BY id", PROJECT_STATUSES):
+        if sess not in mapping:
+            continue
+        examined += 1
+        seen.add(sess)
+        if proj:
+            skipped += 1
+        else:
+            eligible.setdefault(sess, []).append(nid)
+    stored = ({p for p in (normalize(r[0]) for r in con.execute(
+        "SELECT DISTINCT project FROM notes WHERE project IS NOT NULL")) if p} if has_project else set())
+    candidates = {p for p in (normalize(mapping[s]) for s in eligible) if p}
+    known = stored | candidates                    # normalised once, so project_for does not repeat it per session
+    updates: list[tuple[str, int]] = []
+    neutral = 0
+    for sess, ids in eligible.items():
+        proj = project_for(mapping[sess], known, normalized=True)
+        if proj is None:
+            neutral += 1
+        else:
+            updates += [(proj, nid) for nid in ids]
+    after = stored | {p for p, _ in updates}
+    return {"has_project_column": has_project, "examined": examined, "set": len(updates), "skipped_has_project": skipped,
+            "unmatched_sessions": len(set(mapping) - seen), "neutral_sessions": neutral, "projects_after": len(after),
+            "projects": sorted(after), "_updates": updates}
+
+
+def import_projects(ns) -> dict:
+    """The command. Exit-code hints: "usage" marks a problem with FILE or the database path (2), anything else is a failure (1)."""
+    mapping, why = _read_session_map(ns.file)
+    if mapping is None:
+        return {"ok": False, "usage": True, "error": why}
+    db = _db_path(ns)
+    if not db.exists():
+        return {"ok": False, "usage": True, "error": _db_not_found(ns)}
+    sys.path.insert(0, str(ROOT))
+    try:
+        con = _open_read_only(db)
+    except Exception as exc:
+        return {"ok": False, "error": f"cannot open {db}: {type(exc).__name__}: {str(exc)[:160]}"}
+    try:
+        plan = _plan_projects(con, mapping)
+        schema = con.execute("PRAGMA user_version").fetchone()[0]
+    except sqlite3.Error as exc:
+        return {"ok": False, "error": f"cannot read {db}: {type(exc).__name__}: {str(exc)[:160]}"}
+    finally:
+        con.close()
+    updates = plan.pop("_updates")
+    projects = plan.pop("projects")
+    res = {"ok": True, "database": str(db), "dry_run": bool(ns.dry_run), **plan, "backup": None}
+    if ns.show_projects:
+        res["project_list"] = projects
+    if ns.dry_run:
+        res["opened"] = "read-only" + ("" if plan["has_project_column"] else f"; the database is schema {schema} and stays so (a real run upgrades it after a backup)")
+        res["note"] = "dry run: nothing was written (no backup, no schema upgrade)"
+        return res
+    if not updates:
+        res["opened"] = "read-only (nothing to change)"
+        res["note"] = "nothing to change: no backup was made and the file was not touched"
+        return res
+    try:
+        import db_backup
+        made = db_backup.backup_database(db, prefix="bak-projects", keep=5)
+    except Exception as exc:       # BackupError, EncryptionError, OSError: nothing has been changed yet
+        return {"ok": False, "error": f"database backup failed, nothing was changed: {exc}"}
+    if made is None:
+        return {"ok": False, "error": f"database backup failed, nothing was changed: no readable database file at {db}"}
+    res["backup"] = str(made.path)
+    res["opened"] = "read-write"
+    try:
+        from store import DecisionStore
+        store = DecisionStore(str(db))
+        try:
+            changed = 0
+            with store._lock, store.conn:      # one transaction; only notes.project, only where it is still empty
+                for proj, nid in updates:
+                    changed += store.conn.execute("UPDATE notes SET project=? WHERE id=? AND project IS NULL", (proj, nid)).rowcount
+            res["set"] = changed
+            res["skipped_has_project"] += len(updates) - changed     # a note that got a project since the read
+        finally:
+            store.close()
+    except Exception as exc:
+        return {"ok": False, "error": f"cannot write to {db}: {type(exc).__name__}: {str(exc)[:160]} (the backup copy is {made.path})"}
+    return res
+
+
+def import_projects_text(d: dict) -> str:
+    if not d["ok"]:
+        return "ERROR: " + d["error"]
+    lines = [f"{'dry run: ' if d['dry_run'] else ''}{d['database']} opened {d['opened']}",
+             f"notes examined: {d['examined']}",
+             f"notes {'that would be set' if d['dry_run'] else 'set'}: {d['set']}",
+             f"notes skipped (already had a project): {d['skipped_has_project']}",
+             f"sessions in the file that matched no note: {d['unmatched_sessions']}",
+             f"sessions mapped to a neutral folder (home, root or a folder above several projects): {d['neutral_sessions']}",
+             f"distinct projects {'after a real run' if d['dry_run'] else 'after the run'}: {d['projects_after']}"]
+    if d.get("backup"):
+        lines.append(f"backup: {d['backup']}")
+    if d.get("note"):
+        lines.append(d["note"])
+    return "\n".join(lines)
+
+
 # -- install-hook: automatic recall for Claude Code ---------------------------------------------------------------------
 
 HOOK_MARK = "hermind-hook"          # how our entry is recognised again (the command contains it, or hermind_hook.py)
@@ -1671,6 +1842,18 @@ def _main(argv=None) -> int:
     s.add_argument("--chars", type=int, default=100)
     s.add_argument("--fail-on-findings", action="store_true")
     s.add_argument("--json", action="store_true")
+    s = sub.add_parser("import-projects", description="Give notes written before upgrading the project of the session that wrote "
+                       "them, from a JSON file {\"<session id>\": \"<absolute working directory>\"} that you produce (a ~ is "
+                       "expanded; a relative directory is an error). Only notes with no "
+                       "project are set; nothing else changes. A real run saves a backup copy first; --dry-run writes nothing "
+                       "(it opens the database read-only). Database: --db or --profile if given, else the first that exists of "
+                       "the default Hermes home's database, $HERMIND_DB and ~/.hermind/memory.db.")
+    s.add_argument("file", metavar="FILE.json")
+    s.add_argument("--profile")
+    s.add_argument("--db")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--show-projects", action="store_true", help="with --json: also list the distinct projects (paths are private, so never printed otherwise)")
+    s.add_argument("--json", action="store_true")
     s = sub.add_parser("remember", help="save a note to the MCP database")
     s.add_argument("text")
     s.add_argument("--kind", default="auto")
@@ -1785,6 +1968,10 @@ def _main(argv=None) -> int:
         d = audit_db(ns)
         emit(d, ns.json, audit_text)
         return 2 if not d["ok"] else (1 if ns.fail_on_findings and (d["flagged"] or d["entities_flagged"]) else 0)
+    if ns.cmd == "import-projects":
+        d = import_projects(ns)
+        emit(d, ns.json, import_projects_text)
+        return 0 if d["ok"] else (2 if d.get("usage") else 1)
     if ns.cmd == "questions":
         emit(questions(), ns.json, questions_text)
         return 0

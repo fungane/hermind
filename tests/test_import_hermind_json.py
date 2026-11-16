@@ -40,6 +40,7 @@ LEFT_OUT = {
     "gen_at": "carried, but the time of generation is not a field of the round trip",
     "gen_model": "carried, but the model name is not a field of the round trip",
     "canonical_id": "compared after mapping the ids, see the links check",
+    "project": "never exported (a path of the writer's machine); an imported note has none",
 }
 
 

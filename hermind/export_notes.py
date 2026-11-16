@@ -23,6 +23,7 @@ except ImportError:  # loaded as a top-level module (hermind_cli.py from a check
 
 FORMATS = ("json", "jsonl", "markdown")
 FIRST_KEYS = ("id", "kind", "content", "keywords", "created_at")    # the five keys of the first export, kept first
+PRIVATE_COLUMNS = frozenset({"project"})   # columns of `notes` that stay in the database (a path of the writer's machine)
 STATUS_ORDER = ("active", "merged", "superseded", "rejected")
 
 
@@ -34,7 +35,7 @@ class ExportError(Exception):
 
 
 def collect_records(conn, *, live_only: bool = False, scope: str | None = None) -> list[dict]:
-    """The full record of every note, ordered by id: every column of `notes` under its own name (the five keys of the
+    """The full record of every note, ordered by id: every column of `notes` under its own name except PRIVATE_COLUMNS (the five keys of the
     old export first), then `entities` ([{"name", "aliases"}]) and `links` ([{"to", "rel"}], outgoing, from
     note_links). *live_only* keeps notes with status 'active'; *scope* keeps one scope. Only reads."""
     sql, args = "SELECT * FROM notes", []
@@ -50,7 +51,7 @@ def collect_records(conn, *, live_only: bool = False, scope: str | None = None) 
     records: list[dict] = []
     for r in rows:
         cols = list(r.keys())
-        values = dict(zip(cols, tuple(r)))
+        values = {k: v for k, v in zip(cols, tuple(r)) if k not in PRIVATE_COLUMNS}
         rec = {k: values[k] for k in FIRST_KEYS if k in values}
         rec.update((k, v) for k, v in values.items() if k not in rec)
         records.append(rec)

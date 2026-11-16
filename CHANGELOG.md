@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.1.0
+
+Hermes plugin: automatic recall now knows which project a note came from. A user with no project (or who never
+changes a setting) sees the same ranking as before for notes without a project.
+
+- **Notes remember their project.** Each new note stores the working directory of the session that wrote it. Your home
+  directory, a filesystem root and a folder above two or more projects count as no project. The value stays inside the
+  database: it is never in a tool result, the MCP server's output or an export.
+- **Automatic recall ranks notes from another project lower, never hides them.** `chat` and `summary` notes written in a
+  different project get a factor of 0.5 (with semantic search on, a note that the embedding results also surface can be
+  scaled a second time, 0.25 overall). Pinned notes, notes you opened or confirmed, and technical facts, decisions and
+  preferences are not demoted; explicit searches are unchanged. Settings `project_penalty` (default `0.5`) and
+  `project_penalty_kinds` (default `chat,summary`); to turn it off set `project_penalty: 1.0`.
+- **Schema 6.** One new nullable column, `notes.project`. A schema 5 database is copied first
+  (`<database>.bak-v5-...`, the three newest are kept) and the upgrade stops if the copy fails.
+- **`hermind import-projects FILE.json`** gives notes written before the upgrade the project of their session, from a JSON
+  object of session ids and working directories that you produce. It sets only notes without a project, saves a
+  backup copy first, and `--dry-run` writes nothing (not even an upgrade of an older file). See
+  docs/import-export.md.
+
+- **LLM helper behind a relay.** The optional extraction/rerank client sends a `User-Agent` and, for
+  `opencode.ai`, one stable session id per client, so a relay in front of an OpenAI-compatible endpoint accepts the
+  call. Direct DeepSeek users see no change.
+
 ## 1.0.2
 
 Fixes from a newcomer's install test: MCP-only installs (no Hermes) now work the way the docs say. Nothing changes

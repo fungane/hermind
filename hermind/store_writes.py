@@ -111,7 +111,7 @@ class WriteMixin:
             proof_count: int = 1, screen: bool = True, candidate: bool = False, scope: str | None = None,
             tags: str | Iterable[str] = "", review: str = "active", valid_from=None, valid_to=None,
             never_expires: bool = False, touch_existing: bool = True, commit: bool = True,
-            exact_entities: bool = False, reset_expiry: bool = True) -> tuple[int, bool]:
+            exact_entities: bool = False, reset_expiry: bool = True, project: str | None = None) -> tuple[int, bool]:
         """Insert a note. Returns (id, created). An exact duplicate (or, with *dedup_threshold*, a near-duplicate of
         the same kind) returns the existing id with created=False. kind="auto" classifies from the text.
         Raises RefusedWrite for credential-like content or content that was forgotten (tombstoned).
@@ -123,7 +123,10 @@ class WriteMixin:
         the same happens when the kind itself never expires, e.g. "decision"; reset_expiry=False turns this off for a writer
         that is not trusted, whose re-save must not change an existing note's expiry); touch_existing=False leaves an exact duplicate untouched (no proof_count
         bump); commit=False leaves the transaction open so the caller can commit many notes at once; exact_entities=True
-        links the note to the *entities* given and to nothing else (see _link_entities)."""
+        links the note to the *entities* given and to nothing else (see _link_entities).
+        project (keyword-only, default None = unknown): the working directory the note was written in, already normalised
+        (project.py). It is stored on a NEW note only and never read back into a note dict, a tool result or an export;
+        an exact duplicate or a near-twin that add() returns keeps the project it has."""
         review = "pending" if review == "pending" else "active"
         valid_from, valid_to = parse_valid(valid_from), parse_valid(valid_to)
         if valid_from is not None and valid_to is not None and valid_to <= valid_from:
@@ -177,10 +180,10 @@ class WriteMixin:
             cur = self.conn.execute(
                 "INSERT INTO notes(content, kind, keywords, created_at, expires_at, source_session, pinned, "
                 "content_hash, doc_len_content, doc_len_keywords, event_at, proof_count, candidate, scope, tags, review, "
-                "valid_from, valid_to) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "valid_from, valid_to, project) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (content, kind, keywords, created_at, expires_at, source_session or "", int(bool(pinned)), h,
                  len(ctoks), len(ktoks), ev[0] if ev else future_date, max(1, int(proof_count)), int(bool(candidate)),
-                 scope, tags, review, valid_from, valid_to))
+                 scope, tags, review, valid_from, valid_to, project or None))
             nid = cur.lastrowid
             self._index(nid, ctoks, ktoks)
             self._link_entities(nid, content, entities, exact=exact_entities)
@@ -425,7 +428,8 @@ class WriteMixin:
                 doc_len_content=old["doc_len_content"], doc_len_keywords=old["doc_len_keywords"],
                 event_at=old["event_at"], proof_count=1, status="superseded", canonical_id=note_id, consolidated_at=now,
                 trust=old["trust"], valid_to=now if old["valid_to"] is None else min(now, old["valid_to"]),
-                scope=old["scope"], tags=old["tags"], review=old["review"], valid_from=old["valid_from"])
+                scope=old["scope"], tags=old["tags"], review=old["review"], valid_from=old["valid_from"],
+                project=old["project"])
             self.conn.execute("UPDATE postings SET note_id=? WHERE note_id=?", (hist, note_id))
             self.conn.execute("UPDATE note_entities SET note_id=? WHERE note_id=?", (hist, note_id))
             self.conn.execute("INSERT OR IGNORE INTO note_links(src, dst, rel, created_at) VALUES (?,?,?,?)",
@@ -449,18 +453,18 @@ class WriteMixin:
 
     def _insert_history_row(self, *, content, kind, keywords, created_at, expires_at, source_session, pinned,
                             doc_len_content, doc_len_keywords, event_at, proof_count, status, canonical_id,
-                            consolidated_at, trust, valid_to, scope, tags, review, valid_from) -> int:
+                            consolidated_at, trust, valid_to, scope, tags, review, valid_from, project=None) -> int:
         """Insert the hidden row of an older version of a note (status superseded / merged, canonical_id = the note it
         belongs to, locked so consolidation leaves it alone) and return its id. update() and add_older_version() both
         write history rows through here. The caller indexes it and links it."""
         return self.conn.execute(
             "INSERT INTO notes(content, kind, keywords, created_at, expires_at, source_session, pinned, "
             "content_hash, doc_len_content, doc_len_keywords, event_at, proof_count, status, canonical_id, "
-            "consolidated_at, locked, trust, valid_to, scope, tags, review, valid_from) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)",
+            "consolidated_at, locked, trust, valid_to, scope, tags, review, valid_from, project) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?)",
             (content, kind, keywords, created_at, expires_at, source_session, pinned, "", doc_len_content,
              doc_len_keywords, event_at, proof_count, status, canonical_id, consolidated_at, trust, valid_to, scope,
-             tags, review, valid_from)).lastrowid
+             tags, review, valid_from, project)).lastrowid
 
     def add_older_version(self, note_id: int, content: str, *, kind: str, keywords: str = "", created_at: float,
                           status: str = "superseded", rel: str = "version_of", valid_from: float | None = None,

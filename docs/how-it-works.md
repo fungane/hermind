@@ -27,6 +27,7 @@ and how well it recalls in the maintainer's own tests.
 | **Review queue** | Notes written by LLM extraction start as `[pending]`: searchable, ranked x0.6, marked in results. `memory_review` lists, confirms, rejects and restores them |
 | **Core memory** | A deterministic block (no LLM) of pinned notes and the highest-trust preferences, capped at `core_summary_chars` (3500), added to the system prompt each session |
 | **Recall log** | Each search or automatic recall records which note ids it listed (ids and rank only), and a later `memory_get` or helpful feedback records which listing led to it. With the question text already kept in `usage_log` (200 characters, 90 days, `<private>` stripped) this is a real question-to-right-note history |
+| **Project rank** | Hermes plugin only. Notes remember the working directory of the session that wrote them (`notes.project`; none for the home directory, a filesystem root or a folder above two or more projects). Automatic recall multiplies the score of a `chat` or `summary` note from another project by 0.5 (`project_penalty`, `project_penalty_kinds`), after every other factor; with semantic search on, the fused ordering applies the same factor again, so a note that both lists surface can be scaled twice (0.25 overall). It is skipped for pinned notes, notes that were opened (`opened_count`), confirmed (proof count 2 or more) or trusted above the default, and when the combined factor would fall under 0.25. Explicit searches, the MCP server and the duplicate check never use it. `hermind import-projects FILE.json` fills the project of older notes from a session-to-directory file |
 | **Open-rate prior** | Notes the agent opens after they were listed rank slightly higher, ignored ones slightly lower: smoothed rate against the corpus rate, only after 5 shows, 90-day decay, **never more than ±10 %** |
 | **Quiet recall** | One-word replies such as "OK", "可以", "做吧" do not trigger a lookup (they are still stored: they are often approvals). Filler (謝謝, 幫我, 一下 ...) is ignored and generic task words (問題, 排查 ...) count less; prompts with no topic word, image-only messages and background-process notices recall nothing. Empty results tell the model not to loop |
 | **Hygiene** | Secret screen over the whole turn, masked-credential refusal, forget tombstones, injected-memory stripping, fence-tag defanging, future source dates kept as event dates, scopes and tags. See [Privacy](privacy.md) |
@@ -39,7 +40,7 @@ One SQLite file.
 
 | Table | Holds |
 |---|---|
-| `notes` | text, `kind` (decision, preference, tech, state, chat, news, summary), agent `keywords`, generated aliases, `status` (active, merged, superseded, rejected), `review` (active, pending), trust, proof count, scope, tags, timestamps, validity window (`valid_from`, `valid_to`), open-rate counts (`shown_count`, `opened_count`, `fb_at`) |
+| `notes` | text, `kind` (decision, preference, tech, state, chat, news, summary), agent `keywords`, generated aliases, `status` (active, merged, superseded, rejected), `review` (active, pending), trust, proof count, scope, tags, timestamps, validity window (`valid_from`, `valid_to`), open-rate counts (`shown_count`, `opened_count`, `fb_at`), `project` (the session's working directory, internal: never in a result or an export) |
 | `postings` | inverted index `(term, note_id, field, tf)` for content, keywords, generated aliases and learned terms |
 | `entities`, `note_entities`, `entity_links` | entity graph: names with aliases, which notes mention them, co-mention weights |
 | `note_links` | `merged_into`, `version_of` and similar relations between notes |
@@ -49,7 +50,7 @@ One SQLite file.
 | `meta` | schema and tokenizer versions, tool bookkeeping |
 
 A database built with an older tokenizer is re-indexed automatically on open. Schema changes are additive (nullable or
-defaulted columns added on open; the current schema version is 5), so an old database opens unchanged, after a backup.
+defaulted columns added on open; the current schema version is 6), so an old database opens unchanged, after a backup.
 
 ## Write path
 
@@ -174,6 +175,7 @@ the offline scripts are in `hermind/tools/`.
 | `textnorm.py` | normalisation, tokenisation, date parsing and kind classification |
 | `screen.py` | credential and injected-text screens on the write path |
 | `pii.py` | personal-data redaction before LLM calls |
+| `project.py` | which working directory a note was written in: the normalised path, the directories that count as no project, whether two directories are the same project, and the rule that demotes a note from another project in automatic recall |
 | `llm.py` | the optional OpenAI-compatible client: rerank, extraction, reflect synthesis |
 | `dbdriver.py` | opening the database (plain SQLite or optional SQLCipher) |
 | `db_backup.py` | the one backup routine (SQLite online backup, integrity check, owner-only, same key for an encrypted database), used before an import, a revert and a schema upgrade |

@@ -49,7 +49,7 @@ LEARN_WINDOW_SECONDS = 600.0
 EXPANSION_WEIGHT = 0.75
 K1, B = 1.2, 0.75
 RECENCY_HALF_LIFE_DAYS = 120.0
-SCHEMA_VERSION = 5   # 5: review, valid_from, shown_count/opened_count/fb_at (additive columns only)
+SCHEMA_VERSION = 6   # 6: project (one nullable column); 5: review, valid_from, shown_count/opened_count/fb_at (additive columns only)
 # Bump when textnorm.tokenize/stem output changes: an existing database is then re-indexed once on open.
 TOKENIZER_VERSION = "2"  # 2: derivational English suffixes (presentation/present) in textnorm.stem
 # Skip scoring terms whose document frequency exceeds this share of notes (True: CJK unigram, False: other).

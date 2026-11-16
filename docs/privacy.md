@@ -42,6 +42,7 @@ What you should do:
 | Review of what agents write | With `--write`, an agent's notes are saved at once. Only risky ones wait for you: text that reads like an instruction to a future agent ("ignore previous instructions..."), notes with personal data, pin requests and edits to pinned notes (the old text stays in history). Held notes are searchable but never reach the core block, and the agent cannot confirm them. `--review-all` holds everything; `--trust-writes` holds nothing |
 | `hermind review` | List held notes, confirm (`--confirm 12,15` or `all`) or reject (`--reject 12`) |
 | `hermind audit-db` | Read-only scan of a database for credential-like values and personal data (patterns only; excerpts have personal data masked, and none is shown for credentials). Existing notes are not re-checked on their own; run it when you want to know |
+| `hermind import-projects` | Gives older notes the project (working directory) of their session from a JSON file you make. Only notes with no project are set; a real run saves a backup copy first and `--dry-run` writes nothing. The summary prints counts, never paths |
 | Notes are data | Text returned to an agent is wrapped with a reminder that notes are not instructions, and instruction-like lines in stored text are defanged. This reduces prompt-injection risk; it cannot remove it |
 | Read-only MCP | Write tools are not advertised unless you pass `--write`, and a call to one fails as an unknown tool |
 | Recall log | `recall_shown` holds note ids and ranks only. The question text it points to is the 200-character query kept in `usage_log` for 90 days (`<private>` text stripped). Nothing leaves the machine |
@@ -75,7 +76,7 @@ SQLCipher (AES-256). Without one nothing changes and nothing extra is installed.
 
 ```bash
 pip install ".[encrypted]"     # in a checkout: the sqlcipher3 driver (wheels for Linux x86_64 / aarch64, macOS, Windows)
-# for uvx, start the server with --from "hermind[encrypted] @ git+https://github.com/fungane/hermind@v1.0.2"
+# for uvx, start the server with --from "hermind[encrypted] @ git+https://github.com/fungane/hermind@v1.1.0"
 python3 hermind/tools/encrypt_db.py --generate-key-file ~/.hermind/db.key   # random key, mode 600, never overwrites
 export HERMIND_DB_KEY_FILE=~/.hermind/db.key
 # stop Hermes, hermind-mcp and the vector worker, then:

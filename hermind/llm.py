@@ -12,6 +12,7 @@ import os
 import re
 import time
 import urllib.request
+import uuid
 
 try:
     from .pii import find_pii, redact_pii
@@ -26,6 +27,7 @@ class LLMClient:
         self.base_url = str(cfg.get("base_url") or "").rstrip("/")
         self.model = str(cfg.get("model") or "")
         self.timeout = float(cfg.get("timeout") or 8)
+        self.session_id = uuid.uuid4().hex  # stable per client; the OpenCode relay routes on x-opencode-session
         self.api_key = os.environ.get(str(cfg.get("api_key_env") or ""), "") if cfg.get("api_key_env") else ""
         # extra request fields for providers that need them, e.g. DeepSeek: {"thinking": {"type": "disabled"}}
         self.extra_body = cfg.get("extra_body") if isinstance(cfg.get("extra_body"), dict) else {}
@@ -65,7 +67,11 @@ class LLMClient:
         body = json.dumps({"model": self.model, "temperature": 0, "max_tokens": max_tokens,
                            "messages": [{"role": "user", "content": prompt}], **self.extra_body,
                            **({"response_format": {"type": "json_object"}} if json_mode else {})}).encode()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json",
+                   # a urllib default UA is blocked by opencode.ai's Cloudflare (1010)
+                   "User-Agent": "Hermind/1.4 (+https://github.com/fungane/hermind)"}
+        if "opencode.ai" in self.base_url:
+            headers["x-opencode-session"] = self.session_id
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         try:

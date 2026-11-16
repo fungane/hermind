@@ -1,5 +1,6 @@
 """Optional SQLCipher encryption: dbdriver.py, the DecisionStore hook, tools/encrypt_db.py, tools/backup.py, hermind-mcp."""
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -158,6 +159,26 @@ def test_backup_of_an_encrypted_database_stays_encrypted(tmp_path, Store):
     s = Store(str(copy), key="k1")
     assert s.conn.execute("SELECT count(*) FROM notes").fetchone()[0] == 2
     s.close()
+
+
+def test_import_projects_dry_run_reads_an_encrypted_database_without_creating_files(tmp_path, Store):
+    db = tmp_path / "m.db"
+    s = Store(str(db), key="k1")
+    s.add("orders use PostgreSQL", kind="chat", source_session="s1")
+    s.close()
+    before, listing = db.read_bytes(), sorted(os.listdir(tmp_path))
+    f = tmp_path / "map.json"
+    f.write_text('{"s1": "/srv/work/atlas"}', encoding="utf-8")
+    env = {**os.environ, "HERMIND_DB_KEY": "k1", "HOME": str(tmp_path), "USERPROFILE": str(tmp_path),
+           "HERMES_HOME": str(tmp_path / ".hermes")}
+    env.pop("HERMIND_DB", None)
+    r = subprocess.run([sys.executable, str(ROOT / "hermind_cli.py"), "import-projects", str(f), "--db", str(db),
+                        "--dry-run", "--json"], capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = json.loads(r.stdout)
+    assert out["dry_run"] is True and out["set"] == 1 and out["opened"].startswith("read-only")
+    assert db.read_bytes() == before
+    assert sorted(os.listdir(tmp_path)) == sorted(listing + ["map.json"])   # no -wal, -shm or backup
 
 
 def test_mcp_server_reads_an_encrypted_database(tmp_path, Store, mcp_spawn):

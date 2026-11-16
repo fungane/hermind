@@ -5,6 +5,7 @@ How to bring notes into Hermind (`hermind import`), take them out (`hermind expo
 
 - [Import](#import)
 - [Export](#export)
+- [Giving older notes a project](#giving-older-notes-a-project)
 - [Backup](#backup)
 - [Uninstall](#uninstall)
 
@@ -352,8 +353,35 @@ information.
 - **Vectors** (the semantic index) and **the search index** (`postings`): both are rebuilt from the text.
 - **Tombstones**: digests of notes you forgot, which keep automatic capture from bringing them back.
 - **The usage log** (what was searched and listed) and the bookkeeping of imports (batches).
+- **The project** of a note (`notes.project`, the working directory it was written in): it is a path on your machine. An import leaves it empty; `hermind import-projects` fills it for older notes (see below).
 
 To move everything, tombstones included, copy the database file (see [Backup](#backup)).
+
+### Giving older notes a project
+
+Notes written by the Hermes plugin before schema 6 have no project, so automatic recall treats them as neutral (it never
+demotes them). `hermind import-projects FILE.json [--profile NAME | --db FILE] [--dry-run] [--json]` sets the project of
+those notes from a file you make, a JSON object `{"<session id>": "<absolute working directory>"}` (Hermind does not read
+Hermes' own databases to find them).
+
+- The keys are session ids: an empty or whitespace key is a usage error, because notes saved without a session share the
+  empty id and one such key would give its directory to all of them. Values must be absolute paths; `~` is expanded. A
+  relative value is a usage error (exit 2) that names the session ids, because the stored project would depend on the
+  directory the command ran in and would not match the one the provider stores.
+- Only active and history notes (superseded, merged) whose `source_session` is a key of the file and whose project is empty
+  are set. A note waiting in the review queue is active, so it gets the project too; a note you rejected (asked to forget)
+  is left alone, and so is one that already has a project. Every other column is never changed.
+- The same rules as for new notes apply: an empty value, a filesystem root, your home directory and a folder above two or
+  more projects (stored, or set by the same file) stay without a project.
+- `--dry-run` prints what would happen and writes nothing: it opens the database read-only, makes no backup and does not
+  upgrade a schema 5 file. A real run with something to set saves `<database>.bak-projects-<time>-<n>` first (the newest
+  five are kept), then upgrades an older schema if needed (with its own backup) and sets the projects in one transaction.
+  With nothing to set it leaves the file alone. Running it twice changes nothing the second time.
+- The summary gives counts: notes examined, set, skipped because they already had a project, sessions in the file that
+  matched no note, sessions mapped to a neutral folder, and distinct projects afterwards. It never prints a project
+  path (the database path and a backup path are printed); `--json --show-projects` adds the list. Exit 0 on success, 1
+  on a failure, 2 on a usage error (a file that is not a JSON object of absolute-path strings, an empty session id, a
+  database that does not exist).
 
 ### Examples
 
