@@ -123,13 +123,14 @@ class CountingPm:
 def test_each_real_path_is_computed_once_per_distinct_value():
     pm = CountingPm()
     m = ProjectMatcher(pm=pm)
-    a, b, c = "/srv/work/atlas", "/srv/work/borealis", "/srv/work/cirrus"
+    base = os.path.join(os.path.abspath(os.sep), "srv", "work")   # absolute on every OS
+    a, b, c = (os.path.join(base, n) for n in ("atlas", "borealis", "cirrus"))
     for _ in range(3):
         assert not m.matches(a, b)
     assert not m.matches(a, c)
     assert not m.matches(b, c)
     assert sorted(pm.calls) == sorted([a, b, c])
-    m.matches(a, a + "/src")                  # related by name: no real path needed
+    m.matches(a, os.path.join(a, "src"))       # related by name: no real path needed
     assert len(pm.calls) == 3
 
 
