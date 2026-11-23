@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import json
 import re
+from math import isfinite
 from pathlib import Path
 
 try:
-    from .import_core import Entry, ImportFailed, Reader, ReadResult, register
-    from .store_common import IMPORT_HERMIND
+    from .screen import strip_nested_private_label as _public_label, strip_private_label
+    from .import_core import Entry, ImportFailed, Reader, ReadResult, _trust, register
+    from .store_common import IMPORT_HERMIND, KINDS, parse_valid
 except ImportError:  # loaded as a top-level module (hermind_cli.py from a checkout, tests, tools/)
-    from import_core import Entry, ImportFailed, Reader, ReadResult, register
-    from store_common import IMPORT_HERMIND
+    from screen import strip_nested_private_label as _public_label, strip_private_label
+    from import_core import Entry, ImportFailed, Reader, ReadResult, _trust, register
+    from store_common import IMPORT_HERMIND, KINDS, parse_valid
 
 HEAD = 64 * 1024                                   # detection looks at no more than this
 NEED = ("id", "content", "kind", "status")         # the keys of the first object that make a file Hermind's export
@@ -67,7 +70,7 @@ def _int(v):
 
 def _tags(v) -> list[str]:
     if isinstance(v, str):
-        return v.replace(",", " ").split()
+        return strip_private_label(v).replace(",", " ").split()
     return [str(t) for t in v if str(t).strip()] if isinstance(v, list) else []
 
 
@@ -78,14 +81,71 @@ def _entities(v) -> tuple | None:
     out = []
     for e in v:
         if isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"].strip():
+            name = strip_private_label(e["name"])
+            if not name.strip():
+                continue
             als = e.get("aliases")
-            out.append((e["name"], tuple(a for a in als if isinstance(a, str) and a) if isinstance(als, list) else ()))
+            out.append((name, tuple(a for a in als if isinstance(a, str) and a) if isinstance(als, list) else ()))
     return tuple(out)
 
 
-def _links(v) -> tuple:
-    return tuple((l["to"], l["rel"]) for l in (v if isinstance(v, list) else [])
-                 if isinstance(l, dict) and _int(l.get("to")) is not None and isinstance(l.get("rel"), str) and l["rel"])
+def _scope(value) -> tuple[str | None, bool]:
+    if not isinstance(value, str) or not value.strip():
+        return None, False
+    public = _public_label(value)
+    # A redacted scope with nothing usable by _clean_scope must not become the default scope.
+    if public != value and not re.search(r"[\w.:@]", public):
+        return None, True
+    return public, False
+
+
+def _links(value) -> tuple[tuple, bool]:
+    """Return the distinct public edges and whether a private-only relation was removed."""
+    out: dict[tuple[int, str], None] = {}
+    private_rel = False
+    for link in value if isinstance(value, list) else ():
+        if not isinstance(link, dict):
+            continue
+        to, raw = _int(link.get("to")), link.get("rel")
+        if to is None or not isinstance(raw, str) or not raw:
+            continue
+        rel = _public_label(raw)
+        if rel != raw and not rel.strip():
+            private_rel = True
+        else:
+            out[to, rel] = None
+    return tuple(out), private_rel
+
+
+def _created_at(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        created = parse_valid(value)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return created if created is not None and isfinite(created) else None
+
+
+def _metadata(rec: dict) -> tuple[str | None, float | None, float | None, list[str]]:
+    """Validate before planning so no invalid raw value can be quoted in an import report."""
+    notes = []
+    raw = rec.get("kind")
+    kind = raw.strip().lower() if isinstance(raw, str) else None
+    if kind not in KINDS:
+        kind = None
+        if "kind" in rec:
+            notes.append("kind invalid: dropped; chosen from the text if imported")
+    created = _created_at(rec.get("created_at"))
+    if created is None and "created_at" in rec:
+        notes.append("created_at invalid: dropped; uses the import time if imported")
+    trust = None
+    if "trust" in rec:
+        try:
+            trust = _trust(rec["trust"])
+        except (ValueError, TypeError, OverflowError):
+            notes.append("trust invalid: dropped; uses the default if imported")
+    return kind, created, trust, notes
 
 
 def _after(rec: dict) -> dict | None:
@@ -98,21 +158,21 @@ def _after(rec: dict) -> dict | None:
             out[k] = v
         elif k == "proof_count" and _int(v) is not None and v >= 1:
             out[k] = v
-        elif k in ("gen_keywords", "gen_model", "learned_terms") and isinstance(v, str):
-            out[k] = v
+        elif k in ("gen_keywords", "learned_terms", "gen_model") and isinstance(v, str):
+            out[k] = _public_label(v)
     return out or None
 
 
-def _target(rec: dict) -> tuple[int | None, str]:
+def _target(rec: dict, links: tuple, private_rel: bool) -> tuple[int | None, str | None]:
     """The note an older version belongs to (its canonical_id, else the dst of its version_of / superseded_by /
     merged_into link) and the rel of its link to it."""
-    links = _links(rec.get("links"))
     cid = _int(rec.get("canonical_id"))
     if cid is None:
         cid, rel = next(((to, rel) for to, rel in links if rel in VERSION_LINKS), (None, ""))
         return cid, rel
     rel = next((rel for to, rel in links if to == cid and rel in VERSION_LINKS), "")
-    return cid, rel or DEFAULT_REL.get(rec.get("status"), "version_of")
+    # An explicit canonical id still attaches the older row, but cannot tell us what a hidden relation was.
+    return cid, rel or (None if private_rel else DEFAULT_REL.get(rec.get("status"), "version_of"))
 
 
 def read_hermind_json(source: Path, view) -> ReadResult:
@@ -143,23 +203,31 @@ def read_hermind_json(source: Path, view) -> ReadResult:
             if nid is not None:
                 seen_ids.add(nid)
         label = nid if nid is not None else f"#{pos}"
+        kind, created, trust, notes = _metadata(rec)
         status = rec.get("status")
         if status is None:
-            no_status, status = True, "active"
-        common = dict(text=rec["content"], kind=rec.get("kind") if isinstance(rec.get("kind"), str) else None,
-                      keywords=rec["keywords"] if isinstance(rec.get("keywords"), str) else "", created=_date(rec.get("created_at")),
+            if "status" in rec:
+                notes.append("status invalid: null treated as active (legacy behavior)")
+            else:
+                no_status = True
+            status = "active"
+        elif status not in ("active", *OLDER, "rejected"):
+            notes.append("status invalid: not recognised; not imported")
+        scope, private_scope = _scope(rec.get("scope"))
+        links, private_rel = _links(rec.get("links"))
+        common = dict(text=rec["content"], kind=kind, created=created,
+                      keywords=rec["keywords"] if isinstance(rec.get("keywords"), str) else "",
                       tags=_tags(rec.get("tags")), pinned=bool(rec.get("pinned")), source_session=IMPORT_HERMIND,
                       valid_from=_date(rec.get("valid_from")), valid_to=_date(rec.get("valid_to")),
-                      pending=rec.get("review") == "pending", trust=rec.get("trust"),
-                      scope=rec["scope"] if isinstance(rec.get("scope"), str) and rec["scope"].strip() else None,
+                      pending=rec.get("review") == "pending", trust=trust, scope=scope, private_scope=private_scope,
                       source_id=nid_for_links, after=_after(rec), entities=_entities(rec.get("entities")),
-                      links=_links(rec.get("links")))
+                      links=links, metadata_notes=tuple(notes))
         if status == "active":
             counts["live"] += 1
             res.entries.append(Entry(origin=f"note/{label}", **common))
         elif status in OLDER:
             counts["older"] += 1
-            target, rel = _target(rec)
+            target, rel = _target(rec, links, private_rel)
             if target is None:
                 res.entries.append(Entry(origin=f"version/{label}", status=status, history=(
                     f"an older version ({status}) with no note it belongs to: the record has no canonical_id and no "
@@ -171,8 +239,7 @@ def read_hermind_json(source: Path, view) -> ReadResult:
             res.entries.append(Entry(origin=f"rejected/{label}", history="rejected in review", **common))
         else:
             counts["other"] += 1
-            res.entries.append(Entry(origin=f"other/{label}", history=f"status {status!r} is not a live note; not imported",
-                                     **common))
+            res.entries.append(Entry(origin=f"other/{label}", history="not a live note", **common))
     parts = [f"{counts['live']} live"] + [f"{n} {w}" for n, w in ((counts["older"], "older version(s)"),
                                                                     (counts["rejected"], "rejected (never imported)"),
                                                                     (counts["other"], "with another status (never imported)")) if n]
@@ -189,7 +256,7 @@ def read_hermind_json(source: Path, view) -> ReadResult:
 
 
 def _summarise(entries: list[Entry], decisions) -> list[str]:
-    """One remark that counts every link of the file: recreated (both notes are written by this import) or not."""
+    """Count distinct public links: recreated (both notes are written by this import) or not."""
     written = {e.source_id for e, d in zip(entries, decisions) if d.outcome in ("new", "version") and e.source_id is not None}
     total = made = 0
     for e, d in zip(entries, decisions):

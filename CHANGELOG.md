@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+- Hermind JSON import removes marked private text from scopes and link relations before using them. A private-only scope does not fall back to the default scope. Public scopes and relations still work. Import also cleans entity names, tag strings, generated keywords, learned terms and model labels. Preview and apply explain invalid `kind`, `created_at`, `trust` and `status` without quoting the input. Existing records are not rewritten.
+- Clean marked private text on write and before compaction. The alias and summary batch tools mask personal data sent to the model and clean their preview and execution output.
+- Optional model requests use the installed version in `User-Agent`. The session header is sent only over HTTPS to the exact hostname `opencode.ai`. Authenticated model requests do not forward keys on redirects.
+
 ## 1.1.0
 
 Hermes plugin: automatic recall now knows which project a note came from. A user with no project (or who never

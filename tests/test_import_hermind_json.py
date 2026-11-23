@@ -108,6 +108,200 @@ def entities_of(rec):
     return sorted((e["name"], tuple(sorted(e["aliases"]))) for e in rec["entities"])
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_imported_learned_metadata_keeps_only_public_text(tmp_path, nested):
+    source, db, output = (tmp_path / f for f in ("source.json", "target.db", "again.json"))
+    note = {"id": 1, "kind": "decision", "status": "active", "content": "A fictional pottery catalogue.",
+            "gen_keywords": "glazecard <private>mauvecanary</private>",
+            "learned_terms": "claywheel <private>peachcanary</private>",
+            "gen_model": "stub <private>moss canary</private>"}
+    if nested:
+        for field, term in (("gen_keywords", "mauvecanary"), ("learned_terms", "peachcanary")):
+            note[field] = note[field].replace(term, f"<private>inner</private> {term}")
+    source.write_text(json.dumps([note]), encoding="utf-8")
+    assert do_import({"json": source, "b": db})["created"] == 1
+    export_json(db, output)
+    exported = output.read_text(encoding="utf-8")
+    row, = json.loads(exported)
+    assert (row["gen_keywords"], row["learned_terms"], row["gen_model"]) == ("glazecard", "claywheel", "stub")
+    from contextlib import closing
+    with closing(DecisionStore(str(db))) as store:
+        dump = "\n".join(store.conn.iterdump())
+        for word in ("glazecard", "claywheel"):
+            assert row["id"] in {n["id"] for n in store.search(word)}
+        for word in ("mauvecanary", "peachcanary", "moss canary"):
+            assert word not in dump and word not in exported
+            assert row["id"] not in {n["id"] for n in store.search(word)}
+
+
+@pytest.mark.parametrize(("model", "expected"), [
+    ("Kiln/Blue  2.1", "Kiln/Blue  2.1"),
+    ("Kiln <private>draft <private>clay</private> sample</private> Blue", "Kiln Blue"),
+    ("<private>draft <private>clay</private> sample</private>", ""),
+])
+def test_imported_model_label_round_trip(tmp_path, model, expected):
+    source, db, output = (tmp_path / f for f in ("kiln.json", "target.db", "again.json"))
+    note = {"id": 1, "kind": "tech", "status": "active", "content": "Catalogue of ceramic tiles.",
+            "gen_model": model}
+    source.write_text(json.dumps([note]), encoding="utf-8")
+    assert do_import({"json": source, "b": db})["created"] == 1
+    from contextlib import closing
+    with closing(sqlite3.connect(db)) as con:
+        assert con.execute("SELECT gen_model FROM notes").fetchall() == [(expected,)]
+    export_json(db, output)
+    row, = json.loads(output.read_text(encoding="utf-8"))
+    assert row["gen_model"] == expected
+
+
+def test_private_import_labels_round_trip(tmp_path):
+    source, db, output = (tmp_path / f for f in ("source.json", "target.db", "again.json"))
+    row = {"id": 1, "status": "active", "kind": "decision", "content": "Fictional glaze samples are ready.",
+           "tags": "catalog,<private>quiet jade,plum</private> fired",
+           "entities": [{"name": "Kiln=East <private>hidden kiln</private>", "aliases": ["kiln card"]},
+                        {"name": "<private>hidden rack</private>"}]}
+    source.write_text(json.dumps([row]), encoding="utf-8")
+    result = do_import({"json": source, "b": db})
+    assert result["ok"] and result["created"] == 1
+    export_json(db, output)
+    exported = output.read_text(encoding="utf-8")
+    note, = json.loads(exported)
+    assert {"catalog", "fired"} <= set(note["tags"].split())
+    assert entities_of(note) == [("Kiln=East", ("kiln card",))]
+    con = sqlite3.connect(db)
+    try:
+        persisted = "\n".join(con.iterdump())
+    finally:
+        con.close()
+    for surface in (exported, persisted):
+        assert not any(word in surface for word in ("jade", "plum", "hidden kiln", "hidden rack", "<private>"))
+
+
+def test_six_json_fields_are_safe_in_preview_apply_storage_and_reexport(tmp_path):
+    source, db, output = (tmp_path / name for name in ("pottery.json", "target.db", "again.json"))
+    target = {"json": source, "b": db}
+    shared = "The fictional pottery catalogue lists twelve cups."
+    canary = "pottery-canary-"
+
+    def private(name):
+        return f"<private>{canary}{name}</private>"
+
+    def note(nid, content, **overrides):
+        return {"id": nid, "content": content, "kind": "chat", "status": "active", **overrides}
+
+    data = [
+        note(1, shared, scope=f"Pottery:East {private('mixed-scope')}",
+             kind=private("kind"), created_at=private("created"), trust=private("trust"),
+             links=[{"to": 4, "rel": "References/Glaze  Index"},
+                    {"to": 4, "rel": f"compares {private('mixed-rel')}"},
+                    {"to": 4, "rel": "compares"}, {"to": 4, "rel": private("rel")}]),
+        note(2, shared, scope="Pottery:East", trust=canary + "duplicate-trust"),
+        note(3, shared, scope=f"<private>{private('nested-scope')}{canary}default-collision</private>"),
+        note(4, "The display includes stoneware.", scope="Glaze:@North", kind=" TeCh ",
+             created_at="2021-01-01T00:00:00Z", trust="0.75"),
+        note(5, "The display once included terracotta.", status="superseded", scope=f"Glaze:@North {private('old-scope')}",
+             kind="state", created_at=1600000000, trust=0.625,
+             links=[{"to": 4, "rel": f"superseded_by {private('old-mixed-rel')}"}]),
+        note(6, "The display once included porcelain.", status="superseded", canonical_id=4, scope=private("old-scope-only")),
+        note(7, "The display once included tin.", status="rejected", scope=private("rejected-scope"),
+             kind=[private("kind-list")], created_at=False, trust={"value": private("trust-object")}),
+        note(8, "The display once included wax.", status=private("status")),
+        note(9, "The display once included earthenware.", status="merged", canonical_id=4,
+             links=[{"to": 4, "rel": f"<private>{private('nested-rel')}{canary}canonical-rel</private>"}]),
+        note(10, "The display once included paper.", status="superseded",
+             links=[{"to": 4, "rel": private("no-canonical-rel")}]),
+        note(11, "A fictional vessel that must not be imported.", scope=private("unique-scope")),
+        note(12, "A past catalogue draft lists ten cups.", status="merged", canonical_id=3),
+        note(13, "The display once included clay beads.", status="superseded", canonical_id=4),
+    ]
+    source.write_text(json.dumps(data), encoding="utf-8")
+
+    store = DecisionStore(str(db))
+    try:
+        existing, _ = store.add(shared, kind="preference", scope="default")
+    finally:
+        store.close()
+    before = db.read_bytes()
+    preview = do_import(target, apply=False)
+    assert preview["batch"] is None and preview["created"] == 0 and db.read_bytes() == before
+    applied = do_import(target)
+    assert applied["batch"] and applied["created"] == 5
+
+    for report in (preview, applied):
+        assert report["ok"] and report["reader"] == "hermind-json"
+        assert canary not in json.dumps(report)
+        by_origin = {e["origin"]: e for e in report["entries"]}
+        assert {o: e["outcome"] for o, e in by_origin.items()} == {
+            "note/1": "new", "note/2": "duplicate", "note/3": "refused", "note/4": "new",
+            "version/5": "version", "version/6": "history", "rejected/7": "history", "other/8": "history",
+            "version/9": "version", "version/10": "history", "note/11": "refused",
+            "version/12": "history", "version/13": "version",
+        }
+        assert by_origin["note/2"]["of_origin"] == "note/1"
+        assert "trust invalid" in by_origin["note/2"]["reason"]
+        for origin in ("note/1", "rejected/7"):
+            reason = by_origin[origin]["reason"]
+            assert "kind" in reason and "chosen from the text" in reason
+            assert "created_at" in reason and "import time" in reason
+            assert "trust" in reason and "default" in reason
+        assert by_origin["note/4"]["reason"] == ""
+        assert "rejected in review" in by_origin["rejected/7"]["reason"]
+        assert "older version" in by_origin["version/6"]["reason"]
+        for origin in ("note/3", "note/11", "version/6", "rejected/7"):
+            assert "scope" in by_origin[origin]["reason"] and "not imported" in by_origin[origin]["reason"]
+        assert "status" in by_origin["other/8"]["reason"] and "not imported" in by_origin["other/8"]["reason"]
+        assert "no note it belongs to" in by_origin["version/10"]["reason"]
+        assert "note/3" in by_origin["version/12"]["reason"] and "scope" in by_origin["version/12"]["reason"]
+        assert any(r.startswith("3 of 3 link(s)") for r in report["remarks"])
+
+    m = id_map(db, applied["batch"])
+    assert set(m) == {1, 4, 5, 9, 13}
+    expected_links = {(m[1], m[4], "References/Glaze  Index"), (m[1], m[4], "compares"),
+                      (m[5], m[4], "superseded_by"), (m[13], m[4], "version_of")}
+    con = sqlite3.connect(db)
+    try:
+        assert set(con.execute("SELECT src, dst, rel FROM note_links")) == expected_links
+        fields = ("scope", "kind", "created_at", "trust", "status", "canonical_id")
+        rows = {r[0]: r[1:] for r in con.execute("SELECT id, " + ", ".join(fields) + " FROM notes")}
+        persisted = "\n".join(con.iterdump())
+    finally:
+        con.close()
+    assert set(rows) == {existing, *m.values()}
+    assert rows[existing][:2] == ("default", "preference")
+    assert rows[m[1]][:2] == ("Pottery:East", "chat") and rows[m[1]][2] >= NOW
+    assert rows[m[1]][3:] == (0.5, "active", None)
+    assert rows[m[4]] == ("Glaze:@North", "tech", 1609459200, 0.75, "active", None)
+    assert rows[m[5]] == ("Glaze:@North", "state", 1600000000, 0.625, "superseded", m[4])
+    assert rows[m[9]][4:] == ("merged", m[4])
+    assert canary not in persisted and "<private>" not in persisted
+
+    export_json(db, output)
+    exported = output.read_text(encoding="utf-8")
+    assert canary not in exported and "<private>" not in exported
+    again = {r["id"]: r for r in json.loads(exported)}
+    assert {nid: tuple(r[f] for f in fields) for nid, r in again.items()} == rows
+    assert {(nid, link["to"], link["rel"]) for nid, r in again.items() for link in r["links"]} == expected_links
+
+
+@pytest.mark.parametrize(("metadata", "origin", "outcome", "field"), [
+    ({"kind": ""}, "note/1", "new", "kind"),
+    ({"created_at": " "}, "note/1", "new", "created_at"),
+    ({"created_at": float("inf")}, "note/1", "new", "created_at"),
+    ({"trust": True}, "note/1", "new", "trust"),
+    ({"trust": 10**400}, "note/1", "new", "trust"),
+    ({"status": None}, "note/1", "new", "status"),
+    ({"status": ["active", "fictional-status-canary"]}, "other/1", "history", "status"),
+])
+def test_explicit_invalid_json_metadata_is_explained_without_changing_outcomes(tmp_path, metadata, origin, outcome, field):
+    source, db = tmp_path / "pottery.json", tmp_path / "target.db"
+    source.write_text(json.dumps([{"id": 1, "kind": "chat", "status": "active",
+                                   "content": "A fictional pottery notice.", **metadata}]), encoding="utf-8")
+    report = do_import({"json": source, "b": db}, apply=False)
+    assert report["ok"] and not db.exists()
+    entry, = report["entries"]
+    assert (entry["origin"], entry["outcome"]) == (origin, outcome)
+    assert field in entry["reason"] and "fictional-status-canary" not in json.dumps(report)
+
+
 def test_the_round_trip_keeps_every_live_note_and_older_version(world):
     out = do_import(world)
     assert out["ok"] and out["reader"] == "hermind-json" and out["reader_detected"]

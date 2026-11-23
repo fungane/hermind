@@ -122,16 +122,51 @@ _RE_PRIVATE = re.compile(r"[<＜]\s*private\s*[>＞].*?(?:[<＜]\s*/\s*private\s
 _RE_PRIVATE_STRAY = re.compile(r"[<＜]\s*/\s*private\s*[>＞]", re.IGNORECASE)
 
 
-def strip_private(text: str) -> tuple[str, int]:
-    """(text with every <private>...</private> span replaced by [REDACTED], number of spans removed). Unchanged text is
-    returned as is, so callers can use it on every write without cost."""
+def strip_private(text: str, *, replacement: str = PRIVATE_MARK) -> tuple[str, int]:
+    """(text with every <private>...</private> span replaced, number of spans removed). The default replacement is
+    [REDACTED]. Unchanged text is returned as is."""
     t = text or ""
     if "rivate" not in t and "RIVATE" not in t.upper():
         return t, 0
-    n = len(_RE_PRIVATE.findall(t))
-    t = _RE_PRIVATE.sub(PRIVATE_MARK, t)
+    t, n = _RE_PRIVATE.subn(lambda _: replacement, t)
     t = _RE_PRIVATE_STRAY.sub("", t)
     return t, n
+
+
+_PRIVATE_LABEL_TAG = re.compile(r"[<＜]\s*(?:(/)\s*)?private\s*[>＞]", re.IGNORECASE)
+
+
+def strip_nested_private_label(value: str) -> str:
+    """Keep the public parts of a label, including labels with nested private spans.
+
+    Use the screen's tag spelling and whitespace behavior, but do not let an inner closing tag expose the rest of
+    an outer private span. An unclosed span still hides everything after its opening tag.
+    """
+    parts = []
+    end = depth = 0
+    hidden = False
+    for tag in _PRIVATE_LABEL_TAG.finditer(value):
+        closing = tag.group(1) is not None
+        if depth == 0:
+            parts.append(value[end:tag.start()])
+            if not closing:
+                hidden = True
+                parts.append(" ")
+        if closing:
+            depth = max(0, depth - 1)
+        else:
+            depth += 1
+        end = tag.end()
+    if depth == 0:
+        parts.append(value[end:])
+    public = "".join(parts)
+    return " ".join(public.split()) if hidden else public
+
+
+def strip_private_label(text: str) -> str:
+    """Keep the public parts of a label without turning redaction placeholders into labels or search terms."""
+    public, hidden = strip_private(text, replacement=" ")
+    return " ".join(public.split()) if hidden else public
 
 
 # Wording that tries to steer a later reader (instructions aimed at an agent) rather than record a fact. Notes written by

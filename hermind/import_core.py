@@ -48,6 +48,7 @@ DEFAULT_SCOPE = "default"         # what `hermind remember` uses (DecisionStore'
 HISTORY_STATUSES = ("superseded", "merged")      # how the Markdown export (--include-history) marks an older version
 VERSION_RELS = ("version_of", "superseded_by", "merged_into")   # the links from an older version to a newer note
 EDIT_SYNC_HINT = "tools/import_md.py syncs edits of an exported folder"
+PRIVATE_SCOPE_REASON = "scope has no usable text outside <private>; not imported"
 
 
 # -- entries and readers ----------------------------------------------------------------------------------------
@@ -79,11 +80,13 @@ class Entry:
     # -- what Hermind's own JSON export carries (reader_hermind_json.py); every other reader leaves these alone --
     source_id: int | None = None              # the entry's id in the source (the source numbers its notes)
     version_of: int | None = None             # an older version of the live entry with this source_id (outcome `version`)
-    version_rel: str = ""                     # the link from the older version to its note: version_of, superseded_by, merged_into
+    version_rel: str | None = ""              # older version's link; None suppresses the fallback for a private relation
     after: dict | None = None                 # set on the new note after it is written (see DecisionStore.restore_fields)
     entities: tuple | None = None             # ((name, (alias, ...)), ...): exactly the entities the source gives the note
                                               # (None: the source says nothing, the store finds them in the text)
     links: tuple = ()                         # ((source id of another note, rel), ...): the outgoing links the source gives
+    private_scope: bool = False               # an explicit redacted scope with no usable public part, not a missing scope
+    metadata_notes: tuple[str, ...] = ()      # safe diagnostics for unusable fields, even when a note is not written
 
 
 @dataclass
@@ -320,9 +323,11 @@ class Decision:
     plan: Plan | None = None
     text: str = ""                        # a short snippet, only for ``new`` entries (never of refused ones)
     group: str = ""                       # the part of the source the entry belongs to (see ReadResult.groups)
+    metadata_notes: tuple[str, ...] = ()   # kept separately in case apply replaces the decision's reason
 
     def as_dict(self) -> dict:
-        d = {"n": self.n, "origin": self.origin, "outcome": self.outcome, "reason": self.reason, "group": self.group}
+        reason = "; ".join(filter(None, (self.reason, *self.metadata_notes)))
+        d = {"n": self.n, "origin": self.origin, "outcome": self.outcome, "reason": reason, "group": self.group}
         if self.note_id is not None:
             d["note_id"] = self.note_id
         if self.of_origin is not None:
@@ -412,11 +417,12 @@ def decide(entries: Iterable[Entry], view, *, reader: str, scope: str = DEFAULT_
     out: list[Decision] = []
     for i, (e, hit) in enumerate(zip(entries, hits)):
         if hit is not None:
-            out.append(Decision(n=i + 1, origin=e.origin, outcome="excluded", reason=f"matches --exclude {hit}"))
+            d = Decision(n=i + 1, origin=e.origin, outcome="excluded", reason=f"matches --exclude {hit}")
         else:
             d = next(decided)
             d.n = i + 1                                       # the position in the source, excluded entries counted
-            out.append(d)
+        d.metadata_notes = e.metadata_notes
+        out.append(d)
     _resolve_versions(entries, out, view, reader)
     return out
 
@@ -431,6 +437,10 @@ def _resolve_versions(entries: list[Entry], decisions: list[Decision], view, rea
             live.setdefault(e.source_id, (e, d))
     for e, d in zip(entries, decisions):
         if e.version_of is None or d.outcome == "excluded":
+            continue
+        if e.private_scope:
+            d.outcome = "history"
+            d.reason = f"an older version of note #{e.version_of} of the file; {PRIVATE_SCOPE_REASON}"
             continue
         if not (e.text or "").strip():
             d.outcome, d.reason = "empty", "no text"
@@ -465,7 +475,7 @@ def _resolve_versions(entries: list[Entry], decisions: list[Decision], view, rea
             continue
         plan.scope = _clean_scope(e.scope) if e.scope else ld.plan.scope
         plan.version = {"of": e.version_of, "status": e.status if e.status in HISTORY_STATUSES else "superseded",
-                        "rel": e.version_rel or "version_of", "origin": le.origin}
+                        "rel": "version_of" if e.version_rel == "" else e.version_rel, "origin": le.origin}
         d.outcome, d.plan, d.text, d.reason = "version", plan, _snippet(plan.content), "; ".join(plan.notes)
 
 
@@ -481,6 +491,12 @@ def _decide_all(entries: list[Entry], view, *, reader: str, scope: str = DEFAULT
             continue
         if e.unreadable:
             d.outcome, d.reason = "unreadable", e.unreadable
+            continue
+        if e.private_scope:
+            if e.history:
+                d.outcome, d.reason = "history", f"{e.history}; {PRIVATE_SCOPE_REASON}"
+            else:
+                d.outcome, d.reason = "refused", PRIVATE_SCOPE_REASON
             continue
         body = e.body if e.body is not None else e.text
         if not (body or "").strip():
@@ -701,6 +717,8 @@ def apply_import(db: Path | str, reader: str, source: str, decisions: list[Decis
                             d.outcome, d.plan = "history", None
                             d.reason = f"an older version of {p.version['origin']}, which was not written"
                             continue
+                        # A None rel leaves the canonical id intact: the store's INSERT OR IGNORE skips the link
+                        # because note_links.rel is NOT NULL. Do not create a placeholder or a guessed relation.
                         nid = store.add_older_version(
                             live, p.content, kind=p.kind, keywords=p.keywords, created_at=p.created_at if p.created_at is not None else t,
                             status=p.version["status"], rel=p.version["rel"], valid_from=p.valid_from, valid_to=p.valid_to,
@@ -778,7 +796,7 @@ def _finish_hermind_parts(store, batch_id: str, decisions: list[Decision], writt
             # An older version whose own link points at a middle note (merged into a note that was merged in turn) got a
             # link to its canonical note when it was written; the source has no such link, so take it out again.
             v = d.plan.version if d.outcome == "version" else None
-            if v and v["of"] in written and (v["of"], v["rel"]) not in d.plan.links and any(
+            if v and v["rel"] is not None and v["of"] in written and (v["of"], v["rel"]) not in d.plan.links and any(
                     r in VERSION_RELS and to != v["of"] and to in written for to, r in d.plan.links):
                 store.conn.execute("DELETE FROM note_links WHERE src=? AND dst=? AND rel=?",
                                    (d.note_id, written[v["of"]], v["rel"]))

@@ -8,6 +8,7 @@ from collections import Counter
 from typing import Iterable
 
 try:
+    from .screen import strip_private_label
     from .store_common import (
         DAY, FIELD_CONTENT, FIELD_GEN, FIELD_KEYWORDS, FIELD_LEARNED, KINDS, LEARNED_MAX_TERMS, RE_CJK_CHAR,
         RefusedWrite, SOURCE_ARMS, _RE_NEGATION, parse_valid, _clean_scope, _clean_tags, _day, _digest, _entity_key,
@@ -15,6 +16,7 @@ try:
         looks_secret, looks_secret_label, numbers, parse_dates, sim_features, strip_private, has_text_outside_private, token_weight, tokenize
     )
 except ImportError:  # loaded as a top-level module (tools/)
+    from screen import strip_private_label
     from store_common import (
         DAY, FIELD_CONTENT, FIELD_GEN, FIELD_KEYWORDS, FIELD_LEARNED, KINDS, LEARNED_MAX_TERMS, RE_CJK_CHAR,
         RefusedWrite, SOURCE_ARMS, _RE_NEGATION, parse_valid, _clean_scope, _clean_tags, _day, _digest, _entity_key,
@@ -31,10 +33,18 @@ MAX_NOTE_CHARS = 100_000   # one note, in characters; a 10 MB write used to take
 FORGOTTEN_REFUSAL = "refused: this content was forgotten earlier (memory_forget)"
 
 
+def _public_tags(tags):
+    # Protect a whole tag string before splitting on commas or spaces; list entries are individual labels.
+    if isinstance(tags, str):
+        return strip_private_label(tags)
+    return [strip_private_label(str(t)) for t in (tags or ())]
+
+
 def _labels(tags, entities) -> list[str]:
     """Every tag, entity name and entity alias as its own string. An entity is a name, "name=alias|alias" (the documented
     tool syntax) or a (name, aliases) pair; the name and each alias are split off before anything is looked at."""
     out: list[str] = []
+    tags = _public_tags(tags)
     if isinstance(tags, str):
         out += [tags, *tags.replace(",", " ").split()]
     else:
@@ -45,10 +55,12 @@ def _labels(tags, entities) -> list[str]:
             for y in x:
                 walk(y)
         else:
-            s = str(x)
-            out.append(s)
-            name, _, al = s.partition("=")
-            out.extend(p.strip() for p in [name, *al.split("|")] if p.strip())
+            raw = str(x)
+            # Exact imports can store a name verbatim; keep screening the original as well as the cleaned labels.
+            for s in dict.fromkeys((raw, strip_private_label(raw))):
+                out.append(s)
+                name, _, al = s.partition("=")
+                out.extend(p.strip() for p in [name, *al.split("|")] if p.strip())
     walk(list(entities or ()))
     return out
 
@@ -155,7 +167,7 @@ class WriteMixin:
             if self.conn.execute("SELECT 1 FROM tombstones WHERE digest=?", (h,)).fetchone():
                 raise RefusedWrite(FORGOTTEN_REFUSAL)
             scope = _clean_scope(scope) if scope else self.scope
-            tags = _clean_tags(tags)
+            tags = _clean_tags(_public_tags(tags))
             row = self.conn.execute("SELECT id FROM notes WHERE content_hash=? AND scope=?", (h, scope)).fetchone()
             if row:
                 if touch_existing:
@@ -195,7 +207,7 @@ class WriteMixin:
         self.conn.executemany("INSERT OR REPLACE INTO postings(term, note_id, field, tf) VALUES (?,?,?,?)", rows)
 
     def update_keywords(self, note_id: int, keywords: str) -> bool:
-        keywords = " ".join((keywords or "").split())
+        keywords = " ".join(strip_private_label(keywords or "").split())
         with self._lock, self.conn:
             if not self.conn.execute("SELECT 1 FROM notes WHERE id=?", (note_id,)).fetchone():
                 return False
@@ -488,7 +500,7 @@ class WriteMixin:
                 source_session=source_session or "", pinned=int(bool(pinned)), doc_len_content=len(ctoks),
                 doc_len_keywords=len(ktoks), event_at=event_at, proof_count=max(1, int(proof_count)), status=status,
                 canonical_id=note_id, consolidated_at=now, trust=trust, valid_to=valid_to,
-                scope=_clean_scope(scope) if scope else self.scope, tags=_clean_tags(tags), review=review,
+                scope=_clean_scope(scope) if scope else self.scope, tags=_clean_tags(_public_tags(tags)), review=review,
                 valid_from=valid_from)
             self._index(hist, ctoks, ktoks)
             self.conn.execute("INSERT OR IGNORE INTO note_links(src, dst, rel, created_at) VALUES (?,?,?,?)",
@@ -528,7 +540,7 @@ class WriteMixin:
         sets, args = [], []
         if tags is not _UNSET:
             screen_fields(tags)
-            sets.append("tags=?"); args.append(_clean_tags(tags))
+            sets.append("tags=?"); args.append(_clean_tags(_public_tags(tags)))
         if trust is not _UNSET:
             sets.append("trust=?"); args.append(min(1.0, max(0.0, float(trust))))
         if kind is not _UNSET:

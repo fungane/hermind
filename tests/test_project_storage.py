@@ -139,9 +139,15 @@ def test_known_projects_lists_each_distinct_value_once(store):
 def test_a_note_dict_has_no_project_key(store):
     nid, _ = store.add("Atlas keeps orders in PostgreSQL", kind="decision", project=ATLAS)
     store.update(nid, "Atlas keeps orders in PostgreSQL 16")
+    # a chat note of another project: the automatic recall demotes it (project.py:ProjectRule), so this also runs the
+    # project branch of the rescoring and of the vector fusion's floor - the path must not come back in a result
+    other, _ = store.add("Atlas chat about the BOREALIS migration plan", kind="chat", project=BOREALIS)
     seen = [store.get(nid), *store.list(), *store.list(include_hidden=True), *store.search("Atlas PostgreSQL"),
-            *store.history(nid), *store.related("Atlas")["notes"], *store.notes_by_ids([nid])]
+            *store.search("Atlas migration", project=ATLAS),
+            *store.search_multi(["Atlas migration", "BOREALIS plan"], project=ATLAS),
+            *store.list_pending(), *store.history(nid), *store.related("Atlas")["notes"], *store.notes_by_ids([nid])]
     assert seen
+    assert other in [n["id"] for n in store.search("Atlas migration", project=ATLAS)]   # demoted, never hidden
     for note in seen:
         assert "project" not in note, note
 

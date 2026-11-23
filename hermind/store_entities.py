@@ -7,10 +7,12 @@ from collections import defaultdict
 from typing import Iterable
 
 try:
+    from .screen import strip_private_label
     from .store_common import (
         RE_CJK_CHAR, _RE_LATIN_TOK, _entity_key, _valid_entity, extract_entities, normalize
     )
 except ImportError:  # loaded as a top-level module (tools/)
+    from screen import strip_private_label
     from store_common import (
         RE_CJK_CHAR, _RE_LATIN_TOK, _entity_key, _valid_entity, extract_entities, normalize
     )
@@ -39,7 +41,7 @@ class EntityMixin:
 
     def _get_or_create_entity(self, key: str, name: str, aliases: Iterable[str] = (), seed: bool = True) -> int:
         row = self.conn.execute("SELECT id, aliases FROM entities WHERE key=?", (key,)).fetchone()
-        extra = [a for a in aliases if a and _entity_key(a) != key]
+        extra = [a for raw in aliases if (a := strip_private_label(raw).strip()) and _entity_key(a) != key]
         if row:
             if extra:
                 merged = "|".join(dict.fromkeys([a for a in row["aliases"].split("|") if a] + extra))
@@ -102,7 +104,7 @@ class EntityMixin:
         ents: dict[int, None] = {}
         for raw in given:
             # exact: the source's own entity names, which may contain "=" (aliases are set by the caller)
-            name, _, al = (str(raw), "", "") if exact else str(raw).partition("=")
+            name, _, al = (str(raw), "", "") if exact else strip_private_label(str(raw)).partition("=")
             key = _entity_key(name)
             if key if exact else _valid_entity(key):          # exact: the source's own names, whatever kind of name they are
                 ents[self._get_or_create_entity(key, name.strip(), [a.strip() for a in al.split("|")], seed=not exact)] = None

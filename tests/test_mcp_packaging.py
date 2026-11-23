@@ -32,3 +32,16 @@ def test_plugin_yaml_has_a_version_and_deploy_script_does_not_ship_the_mcp_serve
     assert re.search(r"^version: \d+\.\d+\.\d+$", (ROOT / "plugin.yaml").read_text(), re.M)
     deploy = (ROOT / "tools" / "deploy.sh").read_text()
     assert "hermind_mcp" not in deploy and "pyproject" not in deploy
+
+
+def test_every_version_string_agrees():
+    """The version is written in four places, and three of them agreeing is not enough: 1.1.0 shipped a User-Agent of
+    Hermind/1.4, so an endpoint or a proxy log cannot say which release is calling it."""
+    version = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["version"]
+    plugin = re.search(r"^version: (\S+)$", (ROOT / "plugin.yaml").read_text(), re.M)
+    mcp = re.search(r'^__version__ = "([^"]+)"', (ROOT / "hermind_mcp.py").read_text(), re.M)
+    ua = re.search(r'^_VERSION = "([^"]+)"', (ROOT / "llm.py").read_text(), re.M)
+    assert plugin and mcp and ua, "a version string was renamed; update this test with it"
+    assert {plugin.group(1), mcp.group(1), ua.group(1)} == {version}, (
+        f"pyproject.toml says {version}, plugin.yaml {plugin.group(1)}, hermind_mcp.py {mcp.group(1)}, "
+        f"llm.py {ua.group(1)}")

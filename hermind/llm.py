@@ -11,6 +11,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -20,6 +21,11 @@ try:
 except ImportError:  # top-level module load
     from pii import find_pii, redact_pii
     from screen import strip_private
+
+# Sent as the User-Agent of every LLM request. It must equal the version in pyproject.toml, hermind/plugin.yaml and
+# hermind_mcp.__version__; tests/test_mcp_packaging.py fails when they drift (1.1.0 shipped "Hermind/1.4").
+_VERSION = "1.1.1"
+USER_AGENT = f"Hermind/{_VERSION} (+https://github.com/fungane/hermind)"
 
 
 class LLMClient:
@@ -69,13 +75,14 @@ class LLMClient:
                            **({"response_format": {"type": "json_object"}} if json_mode else {})}).encode()
         headers = {"Content-Type": "application/json",
                    # a urllib default UA is blocked by opencode.ai's Cloudflare (1010)
-                   "User-Agent": "Hermind/1.4 (+https://github.com/fungane/hermind)"}
-        if "opencode.ai" in self.base_url:
-            headers["x-opencode-session"] = self.session_id
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+                   "User-Agent": USER_AGENT}
         try:
             req = urllib.request.Request(self.base_url + "/chat/completions", data=body, headers=headers)
+            if self.api_key:
+                req.add_unredirected_header("Authorization", f"Bearer {self.api_key}")
+            endpoint = urllib.parse.urlsplit(req.full_url)
+            if endpoint.scheme == "https" and endpoint.hostname == "opencode.ai":
+                req.add_unredirected_header("x-opencode-session", self.session_id)
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8", "replace"))
             self.last_usage = data.get("usage") or {}

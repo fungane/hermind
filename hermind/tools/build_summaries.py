@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import backfill_aliases as bf  # noqa: E402
+from pii import redact_pii  # noqa: E402
+from screen import strip_nested_private_label  # noqa: E402
 from store import DecisionStore, RefusedWrite  # noqa: E402
 from textnorm import numbers  # noqa: E402
 
@@ -48,8 +50,8 @@ def make_prompt(entity: str, notes: list[dict]) -> str:
     lines = []
     for n in notes:
         d = datetime.fromtimestamp(n["created_at"]).strftime("%Y-%m-%d") if n["created_at"] else "?"
-        lines.append(json.dumps({"id": n["id"], "date": d, "note": n["content"][:500]}, ensure_ascii=False))
-    return PROMPT.format(entity=entity) + "\n".join(lines)
+        lines.append(json.dumps({"id": n["id"], "date": d, "note": redact_pii(n["content"])[0][:500]}, ensure_ascii=False))
+    return PROMPT.format(entity=redact_pii(entity)[0]) + "\n".join(lines)
 
 
 def validate(items, notes: list[dict]) -> list[tuple[str, list[int]]]:
@@ -58,7 +60,7 @@ def validate(items, notes: list[dict]) -> list[tuple[str, list[int]]]:
     for it in items or []:
         if not isinstance(it, dict):
             continue
-        text = str(it.get("text") or "").strip()
+        text = strip_nested_private_label(str(it.get("text") or "")).strip()
         try:
             srcs = [int(i) for i in (it.get("sources") or []) if int(i) in by_id]
         except (TypeError, ValueError):
@@ -70,7 +72,7 @@ def validate(items, notes: list[dict]) -> list[tuple[str, list[int]]]:
             allowed |= set(numbers(by_id[i]["content"]))
         if any(x not in allowed for x in numbers(text)):
             continue  # a figure that no cited note contains: likely invented
-        out.append((text, srcs))
+        out.append((redact_pii(text)[0], srcs))
     return out
 
 
@@ -87,9 +89,9 @@ def call_usage(cfg, prompt: str) -> str:
                        "messages": [{"role": "user", "content": prompt}]}).encode()
     headers = {"Content-Type": "application/json"}
     key = os.environ.get(cfg.api_key_env, "") if cfg.api_key_env else ""
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(cfg.base_url.rstrip("/") + "/chat/completions", data=body, headers=headers)
+    if key:
+        req.add_unredirected_header("Authorization", f"Bearer {key}")
     with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
         data = json.loads(resp.read().decode("utf-8", "replace"))
     u = data.get("usage") or {}
@@ -112,7 +114,7 @@ def work(cfg, entity: str, notes: list[dict]):
                     return entity, notes, validate(items, notes), model, None
                 err = f"{model}: malformed output"
             except Exception as exc:
-                err = f"{model}: {type(exc).__name__}: {exc}"[:200]
+                err = redact_pii(f"{model}: {type(exc).__name__}: {exc}")[0][:200]
             time.sleep(min(8.0, cfg.retry_wait * (2 ** attempt)))
     return entity, notes, None, None, err
 
@@ -132,24 +134,26 @@ def run(cfg, out=None) -> dict:
 
         def done(res):
             entity, notes, items, model, err = res
+            label = redact_pii(entity)[0]  # display only; keep the original store key
             stats["entities"] += 1
             if items is None:
                 stats["failed"] += 1
-                bf.log_event(out, event="failed", entity=entity, error=err)
+                bf.log_event(out, event="failed", entity=label, error=err)
             elif not items:
                 stats["empty"] += 1
-                bf.log_event(out, event="empty", entity=entity)
+                bf.log_event(out, event="empty", entity=label)
             else:
                 if not cfg.dry_run:
                     try:
                         store.replace_summaries(entity, items)
                     except RefusedWrite as exc:          # the whole replace rolled back: the entity keeps its old summaries
                         stats["refused"] += 1
-                        bf.log_event(out, event="refused", entity=entity, error=str(exc)[:200])
-                        print(f"skipped entity {entity!r}: {str(exc)[:120]}", file=sys.stderr)
+                        reason = redact_pii(str(exc))[0]
+                        bf.log_event(out, event="refused", entity=label, error=reason[:200])
+                        print(f"skipped entity {label!r}: {reason[:120]}", file=sys.stderr)
                         return
                     stats["written"] += len(items)
-                bf.log_event(out, event="done" if not cfg.dry_run else "preview", entity=entity, model=model,
+                bf.log_event(out, event="done" if not cfg.dry_run else "preview", entity=label, model=model,
                              summaries=[t for t, _ in items])
 
         with ThreadPoolExecutor(max_workers=cfg.concurrency) as pool:

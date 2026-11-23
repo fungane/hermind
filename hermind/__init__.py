@@ -44,21 +44,21 @@ except ImportError:  # pragma: no cover
 
 try:
     from .screen import (CONTEXT_TAG, clean_prompt, has_text_outside_private, looks_masked_secret, looks_secret, strip_injected,
-                         strip_private, write_flag)
+                         strip_private, strip_private_label, write_flag)
     from .pii import find_pii as _find_pii
     from .project import project_for
     from .store import KINDS, LEARN_WINDOW_SECONDS, PENDING_WEIGHT, DecisionStore, RefusedWrite, day_bounds, l0
     from .store_common import default_db_file, explicit_never_expires
-    from .store_writes import clean_entities
+    from .store_writes import clean_entities, screen_fields
     from .textnorm import classify_kind, topical_weight
 except ImportError:  # loaded as a top-level module (e.g. pytest collecting the plugin dir)
     from screen import (CONTEXT_TAG, clean_prompt, has_text_outside_private, looks_masked_secret, looks_secret, strip_injected,
-                        strip_private, write_flag)
+                        strip_private, strip_private_label, write_flag)
     from pii import find_pii as _find_pii
     from project import project_for
     from store import KINDS, LEARN_WINDOW_SECONDS, PENDING_WEIGHT, DecisionStore, RefusedWrite, day_bounds, l0
     from store_common import default_db_file, explicit_never_expires
-    from store_writes import clean_entities
+    from store_writes import clean_entities, screen_fields
     from textnorm import classify_kind, topical_weight
 
 logger = logging.getLogger(__name__)
@@ -921,6 +921,11 @@ class HermindProvider(MemoryProvider):
         messages = _dict_list(messages)
         if not messages or not _truthy(self._config.get("precompress_capture", True)):
             return ""
+        # Mask each complete message before transcript cropping or fallback sentence splitting.
+        messages = [{"role": m["role"], "content": strip_private(m["content"])[0]} for m in messages
+                    if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)]
+        if not messages:
+            return ""
         found = None
         if self._llm is not None:
             transcript = "\n".join(f"{m.get('role')}: {strip_injected(m['content'])}" for m in messages
@@ -1016,14 +1021,15 @@ class HermindProvider(MemoryProvider):
         keywords = a.get("keywords") or ""
         if isinstance(keywords, (list, tuple)):
             keywords = " ".join(str(k) for k in keywords)
-        keywords = str(keywords).replace(",", " ").replace("，", " ").replace("、", " ")
+        keywords = strip_private_label(str(keywords)).replace(",", " ").replace("，", " ").replace("、", " ")
         masked = looks_masked_secret(content) or looks_masked_secret(keywords)
         if masked:
             return json.dumps({"error": f"refused: {masked}; store a description without it", "refused": True},
                               ensure_ascii=False)
         ents = a.get("entities") or []
         if isinstance(ents, str):
-            ents = [e for e in ents.replace("，", ",").split(",")]
+            screen_fields(entities=ents.replace("，", ",").split(","))
+            ents = strip_private_label(ents).replace("，", ",").split(",")
         ents = [str(e).strip() for e in ents if str(e).strip()]
         if not ents and self._llm is not None:
             ents = clean_entities(self._llm.extract_entities(content) or [])   # the model's output never refuses the note

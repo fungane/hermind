@@ -30,7 +30,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from screen import looks_secret  # noqa: E402
+from pii import redact_pii  # noqa: E402
+from screen import looks_secret, strip_nested_private_label  # noqa: E402
 from store import DecisionStore, _parse_when  # noqa: E402
 from textnorm import normalize  # noqa: E402
 
@@ -67,9 +68,9 @@ def call_llm(cfg: argparse.Namespace, prompt: str) -> str:
     body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     key = os.environ.get(cfg.api_key_env, "") if cfg.api_key_env else ""
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(cfg.base_url.rstrip("/") + "/chat/completions", data=body, headers=headers)
+    if key:
+        req.add_unredirected_header("Authorization", f"Bearer {key}")
     with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
         data = json.loads(resp.read().decode("utf-8", "replace"))
     return str(data["choices"][0]["message"]["content"] or "")
@@ -105,10 +106,11 @@ def clean_aliases(item: dict, content: str) -> list[str]:
     norm_content = re.sub(r"\s+", "", normalize(content))
     out, seen = [], set()
     for a in raw:
-        a = unicodedata.normalize("NFKC", _RE_CTRL.sub(" ", a))
+        a = strip_nested_private_label(unicodedata.normalize("NFKC", _RE_CTRL.sub(" ", a)))
         a = " ".join(a.replace("|", " ").split()).strip(" \"'`,;")
         if not a or len(a) > MAX_ALIAS_CHARS or looks_secret(a):
             continue
+        a = redact_pii(a)[0]
         na = re.sub(r"\s+", "", normalize(a))
         # reject aliases that just copy the note (a long verbatim chunk or the whole text)
         if na == norm_content or (len(na) >= 12 and na in norm_content):
@@ -129,7 +131,7 @@ def process_batch(cfg, batch: list[dict]) -> tuple[list[dict], dict | None, str 
     """Returns (batch, {id: item}, error). Retries transport errors / timeouts / unparsable answers on the primary
     model, then tries each fallback model once (free models are flaky: 404, 429, malformed JSON). Each item carries
     '_model', the model that actually answered."""
-    prompt = PROMPT + "\n".join(json.dumps({"id": n["id"], "note": n["content"][:600]}, ensure_ascii=False)
+    prompt = PROMPT + "\n".join(json.dumps({"id": n["id"], "note": redact_pii(n["content"])[0][:600]}, ensure_ascii=False)
                                 for n in batch)
     err = None
     for mi, model in enumerate(_models(cfg)):
@@ -144,7 +146,7 @@ def process_batch(cfg, batch: list[dict]) -> tuple[list[dict], dict | None, str 
                     out = {str(i.get("id")): {**i, "_model": model} for i in items if isinstance(i, dict)}
                     return batch, out, None
             except Exception as exc:  # timeout, HTTP error, connection refused, bad JSON envelope ...
-                err = f"{model}: {type(exc).__name__}: {exc}"[:200]
+                err = redact_pii(f"{model}: {type(exc).__name__}: {exc}")[0][:200]
             if attempt < attempts - 1:
                 time.sleep(min(8.0, cfg.retry_wait * (2 ** attempt)))
     return batch, None, err
