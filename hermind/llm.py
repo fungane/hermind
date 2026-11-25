@@ -7,6 +7,7 @@ state besides the config. The API key (optional) is read from the environment va
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -17,15 +18,42 @@ import uuid
 
 try:
     from .pii import find_pii, redact_pii
-    from .screen import strip_private
+    from .screen import looks_secret, strip_private
 except ImportError:  # top-level module load
     from pii import find_pii, redact_pii
-    from screen import strip_private
+    from screen import looks_secret, strip_private
 
 # Sent as the User-Agent of every LLM request. It must equal the version in pyproject.toml, hermind/plugin.yaml and
 # hermind_mcp.__version__; tests/test_mcp_packaging.py fails when they drift (1.1.0 shipped "Hermind/1.4").
-_VERSION = "1.1.1"
+_VERSION = "1.1.2"
 USER_AGENT = f"Hermind/{_VERSION} (+https://github.com/fungane/hermind)"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _send(req, timeout):
+    # A loopback model must remain local even when a proxy has been configured.
+    handlers = [_NoRedirect()]
+    if urllib.parse.urlsplit(req.full_url).scheme == "http":
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
+
+
+def safe_endpoint(url):
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if not parts.hostname or parts.username is not None or parts.password is not None or parts.query or parts.fragment:
+            return False
+        if parts.scheme == "https":
+            return True
+        if parts.scheme != "http":
+            return False
+        return parts.hostname == "localhost" or ipaddress.ip_address(parts.hostname).is_loopback
+    except ValueError:
+        return False
 
 
 class LLMClient:
@@ -55,23 +83,38 @@ class LLMClient:
         self._fails = 0
         self._skip_until = 0.0
 
+    def public_text(self, value):
+        text = strip_private(value)[0]
+        if looks_secret(text):
+            return None
+        if self.pii_mode == "block" and find_pii(text, self.redact_patterns):
+            self.pii_blocked += 1
+            return None
+        if self.pii_mode == "redact":
+            text, found = redact_pii(text, self.redact_patterns)
+            self.pii_redacted += bool(found)
+        return text
+
     def chat(self, prompt: str, max_tokens: int = 400, json_mode: bool = False) -> str | None:
         if not (self.base_url and self.model):
             return None
         if time.time() < self._skip_until:
             return None
-        prompt, _ = strip_private(prompt)               # text the user marked <private> never leaves this machine
-        if self.pii_mode != "off":
-            if self.pii_mode == "block":
-                if find_pii(prompt, self.redact_patterns):
-                    self.pii_blocked += 1
-                    return None
-            else:
-                prompt, found = redact_pii(prompt, self.redact_patterns)
-                if found:
-                    self.pii_redacted += 1
-        body = json.dumps({"model": self.model, "temperature": 0, "max_tokens": max_tokens,
-                           "messages": [{"role": "user", "content": prompt}], **self.extra_body,
+        if not safe_endpoint(self.base_url):
+            return None
+        prompt = self.public_text(prompt)
+        if prompt is None or self.public_text(self.model) != self.model:
+            return None
+        # Extra fields are operator configuration. Reject sensitive values and prevent
+        # them from replacing the screened model, messages or response limits.
+        extra = self.extra_body
+        if {"model", "messages", "max_tokens", "input", "prompt"} & extra.keys():
+            return None
+        encoded_extra = json.dumps(extra, ensure_ascii=False)
+        if self.public_text(encoded_extra) != encoded_extra:
+            return None
+        body = json.dumps({**extra, "model": self.model, "temperature": extra.get("temperature", 0),
+                           "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}],
                            **({"response_format": {"type": "json_object"}} if json_mode else {})}).encode()
         headers = {"Content-Type": "application/json",
                    # a urllib default UA is blocked by opencode.ai's Cloudflare (1010)
@@ -83,8 +126,11 @@ class LLMClient:
             endpoint = urllib.parse.urlsplit(req.full_url)
             if endpoint.scheme == "https" and endpoint.hostname == "opencode.ai":
                 req.add_unredirected_header("x-opencode-session", self.session_id)
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8", "replace"))
+            with _send(req, timeout=self.timeout) as resp:
+                raw = resp.read(2_000_001)
+                if len(raw) > 2_000_000:
+                    return None
+                data = json.loads(raw.decode("utf-8", "replace"))
             self.last_usage = data.get("usage") or {}
             self._fails = 0
             return str(data["choices"][0]["message"]["content"] or "").strip() or None
@@ -105,7 +151,13 @@ class LLMClient:
         lexical order). An empty list means 'none helps' and is also treated as no information by the caller."""
         if not notes:
             return None
-        cands = "\n".join(f"{n['id']}: {str(n['content'])[:chars].replace(chr(10), ' ')}" for n in notes)
+        cands = []
+        for n in notes:
+            text = self.public_text(str(n["content"]))
+            if text is None:
+                return None
+            cands.append(f"{n['id']}: {text[:chars].replace(chr(10), ' ')}")
+        cands = "\n".join(cands)
         out = self.chat(self.RERANK_PROMPT.format(q=query, c=cands), max_tokens=200, json_mode=True)
         if not out:
             return None
@@ -132,6 +184,9 @@ class LLMClient:
 
     def extract_entities(self, text: str) -> list[str] | None:
         """Main named entities with aliases, as ['Name=alias1|alias2', ...]."""
+        text = self.public_text(text)
+        if text is None:
+            return None
         items = self._json_list(
             "List the main named entities (products, hosts, people, projects, models) in this note as a JSON array "
             "of strings 'Name=alias1|alias2' (aliases: other spellings, Cantonese / Chinese / English names). "
@@ -140,6 +195,9 @@ class LLMClient:
 
     def extract_candidates(self, transcript: str) -> list[str] | None:
         """Self-contained decision / fact sentences from a conversation excerpt."""
+        transcript = self.public_text(transcript)
+        if transcript is None:
+            return None
         items = self._json_list(
             "From this conversation excerpt, extract up to 8 self-contained facts worth remembering long-term: "
             "decisions and their reasons, settled preferences, technical setup and dated states. Keep the original "
@@ -169,6 +227,9 @@ class LLMClient:
     def extract_facts(self, user: str, assistant: str) -> list[dict] | None:
         """Durable facts of one turn as [{text, kind, aliases}]; None when the model failed (caller falls back to the
         raw chunk), [] when it judged the turn not worth keeping."""
+        user, assistant = self.public_text(user), self.public_text(assistant)
+        if user is None or assistant is None:
+            return None
         turn = f"User: {user[:1500]}\nAssistant: {assistant[:1500]}"
         out = self.chat(self.FACTS_PROMPT.format(turn=turn), max_tokens=700, json_mode=True)
         if not out:
@@ -246,4 +307,7 @@ class LLMClient:
             return None
         notes = "\n".join(f"#{n['id']} [{n['kind']} {n['date']}] {n['content']}"
                           for n in sorted(rows.values(), key=lambda n: (n["date"], n["id"])))
+        notes = self.public_text(notes)
+        if notes is None:
+            return None
         return self.chat(self.DIGEST_PROMPT.format(today=time.strftime("%Y-%m-%d"), notes=notes[:12000], q=query), 700)

@@ -50,14 +50,14 @@ def _client(monkeypatch, **cfg):
     class Resp:
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def read(self): return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+        def read(self, size=-1): return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
 
     def fake(req, timeout=0):
         sent.append(json.loads(req.data)["messages"][0]["content"])
         return Resp()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake)
-    return LLMClient({"base_url": "http://x/v1", "model": "m", **cfg}), sent
+    monkeypatch.setattr("llm._send", fake)
+    return LLMClient({"base_url": "https://relay.example/v1", "model": "m", **cfg}), sent
 
 
 def test_llm_default_redacts_before_sending(monkeypatch):

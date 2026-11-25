@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.2
+
+- Migration and import backup rotation now removes only regular files matching Hermind’s automatic backup naming format.
+
+- Schema 7 stores new forget and rejection markers in the owning scope. Earlier markers have no reliable scope and continue to block recapture across the database. Stop all clients and back up the database before upgrading shared installations. Upgrade every writer before resuming writes. A rollback requires the matching pre-upgrade backup and binaries. Preserve a separate copy of any later writes before reverting.
+
+- Historical links, consolidation, review lists and destructive operations respect scope boundaries. A named scope can read shared notes. Changes to shared notes require the shared write scope. Unknown and inaccessible note IDs give the same tool error. Scoped clients use aliases attached to visible notes and built-in synonyms. Legacy aliases without an owner remain available to all-scope readers.
+- Read-only clients need an existing database prepared by a compatible writer. They read a temporary, owner-private snapshot that includes committed WAL data. Allow temporary disk space for the database and WAL. Read-only search no longer builds missing vectors.
+- Optional model requests require HTTPS for remote endpoints. HTTP remains available on loopback. Requests stop on redirects. Nested private spans and credential-like input are screened before model requests.
+- Search statistics omit query text. Learning vocabulary from searches now requires the explicit plugin setting `learn_query_terms: true`. Preview old query and vocabulary records locally with `hermind privacy-cleanup --db FILE`. The separate `--apply` option clears these fields and their learned index entries in one transaction. Existing backups retain their historical contents.
+- Exports use owner-private files and enforce directory boundaries. Updates requiring review commit their text, history and review state together. JSON-RPC batches are limited to 64 messages. Oversized hook payloads are skipped.
+
 ## 1.1.1
 
 - Hermind JSON import removes marked private text from scopes and link relations before using them. A private-only scope does not fall back to the default scope. Public scopes and relations still work. Import also cleans entity names, tag strings, generated keywords, learned terms and model labels. Preview and apply explain invalid `kind`, `created_at`, `trust` and `status` without quoting the input. Existing records are not rewritten.

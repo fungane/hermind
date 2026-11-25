@@ -181,3 +181,26 @@ def test_helper_scripts_answer_help_without_touching_anything(tmp_path):
         assert r.returncode == 0 and "usage" in r.stdout and not list(tmp_path.iterdir()), (script, r.stdout, r.stderr)
     assert not vec_setup.embed_all(str(tmp_path / "typo.db"), {"profile": "light", "home": str(tmp_path)})["ok"]
     assert not (tmp_path / "typo.db").exists()
+
+
+def test_embed_all_covers_each_scope_with_separate_batches(tmp_path, monkeypatch):
+    from store import DecisionStore
+
+    db = tmp_path / "vectors.db"
+    store = DecisionStore(str(db))
+    for scope in ("first", "second", "shared"):
+        store.add("fixture for " + scope, scope=scope)
+    store.close()
+
+    seen = []
+    def fixture_batch(worker, store, limit):
+        rows = store.missing_vectors(worker.model_name, limit)
+        if rows:
+            seen.append((store.scope, [text for _, text in rows]))
+        return store.put_vectors(worker.model_name, [(nid, text, bytes(4)) for nid, text in rows])
+
+    monkeypatch.setattr(VectorIndex, "available", lambda self: True)
+    monkeypatch.setattr(VectorIndex, "index_missing", fixture_batch)
+    result = vec_setup.embed_all(str(db), {"profile": "light"}, batch=1)
+    assert result["ok"] and result["embedded"] == 3
+    assert sorted(seen) == [(s, ["fixture for " + s]) for s in ("first", "second", "shared")]

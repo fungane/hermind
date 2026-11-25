@@ -316,7 +316,7 @@ def test_a_real_run_on_a_v5_database_backs_up_then_upgrades_then_sets(tmp_path, 
     assert projects(db) == {ids[0]: w("atlas"), ids[1]: None}
     assert len(list(tmp_path.glob("m.db.bak-projects-*"))) == 1 and len(list(tmp_path.glob("m.db.bak-v5-*"))) == 1
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 7
     con.close()
 
 

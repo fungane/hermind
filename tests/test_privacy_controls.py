@@ -32,7 +32,7 @@ def _count(db, sql, *a):
     ("a < private >multi\nline</ private > b", "a [REDACTED] b", 1),
     ("a ＜private＞fullwidth＜/private＞ b", "a [REDACTED] b", 1),
     ("keep <private>half typed and nothing closes it", "keep [REDACTED]", 1),
-    ("outer <private>a<private>b</private>c</private> d", "outer [REDACTED]c d", 1),   # stray closing tag removed
+    ("outer <private>a<private>b</private>c</private> d", "outer [REDACTED] d", 1),   # stray closing tag removed
     ("nothing to hide, just private talk", "nothing to hide, just private talk", 0),
     ("", "", 0),
 ])
@@ -82,7 +82,7 @@ def test_update_strips_and_refuses_like_add(store, pkg):
 def test_usage_log_never_keeps_private_text(store):
     store.log_event("search", source="auto", query="what is <private>my secret question</private> about")
     q = store.conn.execute("SELECT query FROM usage_log").fetchone()[0]
-    assert "secret question" not in q and "[REDACTED]" in q
+    assert q == ""
 
 
 # -- the plugin's capture path and the LLM egress ---------------------------------------------------------------------
@@ -129,14 +129,14 @@ def test_llm_chat_strips_private_before_the_request(pkg, monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, size=-1):
             return json.dumps({"choices": [{"message": {"content": "ok"}}], "usage": {}}).encode()
 
     def fake_urlopen(req, timeout=0):
         sent["body"] = req.data.decode()
         return Resp()
 
-    monkeypatch.setattr(llm_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_mod, "_send", fake_urlopen)
     c = llm_mod.LLMClient({"base_url": "http://127.0.0.1:9/v1", "model": "m", "enabled": True}) if hasattr(llm_mod, "LLMClient") \
         else llm_mod.LLM({"base_url": "http://127.0.0.1:9/v1", "model": "m", "enabled": True})
     assert c.chat("summarise: the code is <private>PLUM-4242</private> and the rest") == "ok"

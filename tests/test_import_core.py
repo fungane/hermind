@@ -300,7 +300,7 @@ def test_interrupted_apply_is_listed_incomplete_and_reverts_completely(tmp_path,
     monkeypatch.setattr(DecisionStore, "add", flaky)
     res = import_core.run_import(src, db, apply=True, backup=False, chunk=2)
     monkeypatch.setattr(DecisionStore, "add", real)
-    assert res["ok"] is False and "disk went away" in res["error"] and res["batch"]
+    assert res["ok"] is False and "OSError" in res["error"] and "disk went away" not in res["error"] and res["batch"]
     batch = import_core.run_list(db)["batches"][0]
     assert batch["state"] == "incomplete" and batch["notes_remaining"] == 2      # the first chunk was committed
     assert len(live_notes(db)) == 3

@@ -255,8 +255,7 @@ def test_six_json_fields_are_safe_in_preview_apply_storage_and_reexport(tmp_path
 
     m = id_map(db, applied["batch"])
     assert set(m) == {1, 4, 5, 9, 13}
-    expected_links = {(m[1], m[4], "References/Glaze  Index"), (m[1], m[4], "compares"),
-                      (m[5], m[4], "superseded_by"), (m[13], m[4], "version_of")}
+    expected_links = {(m[5], m[4], "superseded_by"), (m[13], m[4], "version_of")}
     con = sqlite3.connect(db)
     try:
         assert set(con.execute("SELECT src, dst, rel FROM note_links")) == expected_links

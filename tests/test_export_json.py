@@ -97,7 +97,8 @@ def test_each_notes_entities_match_the_entity_tables(tmp_path, db):
             (nid,)))
         assert sorted((e["name"], tuple(e["aliases"])) for e in o["entities"]) == want, nid
     orchid = [e for e in out[1]["entities"] if e["name"] == "Orchid"]
-    assert orchid == [{"name": "Orchid", "aliases": ["orchid dashboard", "ORC"]}]
+    assert orchid == [{"name": "Orchid", "aliases": ["orchid dashboard", "ORC"],
+                       "note_aliases": ["orchid dashboard", "ORC"]}]
 
 
 def test_live_only_gives_the_active_notes_with_every_field(tmp_path, db):

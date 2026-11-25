@@ -23,6 +23,7 @@ import os
 import secrets
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -46,7 +47,8 @@ def generate_key_file(path: Path) -> None:
 
 def _tables(conn) -> dict[str, int]:
     names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
-    return {n: conn.execute(f'SELECT count(*) FROM "{n}"').fetchone()[0] for n in sorted(names)}
+    return {name: conn.execute('SELECT count(*) FROM "' + name.replace('"', '""') + '"').fetchone()[0]
+            for name in sorted(names)}
 
 
 def convert(src: Path, out: Path, key: str, decrypt: bool) -> None:
@@ -76,13 +78,13 @@ def verify(src: Path, out: Path, key: str, decrypt: bool) -> None:
     try:
         ta, tb = _tables(a), _tables(b)
         if ta != tb:
-            raise SystemExit(f"verification failed: tables differ\n  source {ta}\n  copy   {tb}")
+            raise SystemExit("verification failed: table names or row counts differ")
         ua, ub = a.execute("PRAGMA user_version").fetchone()[0], b.execute("PRAGMA user_version").fetchone()[0]
         if ua != ub:
             raise SystemExit(f"verification failed: user_version {ua} != {ub}")
         ok = b.execute("PRAGMA integrity_check").fetchone()[0]
         if ok != "ok":
-            raise SystemExit(f"verification failed: integrity_check says {ok}")
+            raise SystemExit("verification failed: database integrity check failed")
         print(f"verified: {len(ta)} tables, {sum(ta.values())} rows, user_version {ua}, integrity_check ok")
     finally:
         a.close()
@@ -113,23 +115,24 @@ def main() -> int:
     if a.decrypt == state:
         raise SystemExit(f"{src} is already {'plaintext' if state else 'encrypted'}; nothing to do")
     out = src.with_name(src.name + (".plaintext" if a.decrypt else ".encrypted"))
-    convert(src, out, key, a.decrypt)
-    verify(src, out, key, a.decrypt)
-    if not a.replace:
-        print(f"wrote {out}. Original untouched. Re-run with --replace to swap it in.")
-        return 0
     backup = src.with_name(src.name + (".encrypted-backup" if a.decrypt else ".plaintext-backup"))
-    if backup.exists():
-        raise SystemExit(f"{backup} already exists; move it away first")
-    os.replace(src, backup)
-    for suffix in ("-wal", "-shm"):                                     # leftovers of the old file must not meet the new one
-        try:
-            os.replace(str(src) + suffix, str(backup) + suffix)
-        except FileNotFoundError:
-            pass
-    os.replace(out, src)
-    for f in (src, backup):
-        os.chmod(f, 0o600)
+    if os.path.lexists(out) or (a.replace and os.path.lexists(backup)):
+        raise SystemExit("output or backup already exists; choose an unused destination")
+    with tempfile.TemporaryDirectory(dir=src.parent, prefix=".hermind-convert-") as work:
+        staged = Path(work) / "converted.db"
+        convert(src, staged, key, a.decrypt)
+        verify(src, staged, key, a.decrypt)
+        if not a.replace:
+            os.link(staged, out)
+            print(f"wrote {out}. Original untouched.")
+            return 0
+        # The documented offline operation requires every old reader and writer
+        # to be closed. Never move a live WAL away from a database.
+        if any(os.path.lexists(str(src) + suffix) for suffix in ("-wal", "-shm", "-journal")):
+            raise SystemExit("stop all database users and close the journal before replacing the database")
+        os.link(src, backup)
+        os.chmod(backup, 0o600)
+        os.replace(staged, src)
     note = "it still holds your notes in plaintext; " if not a.decrypt else ""
     print(f"swapped in. The original is now {backup}: {note}delete it once you have checked the result.")
     return 0

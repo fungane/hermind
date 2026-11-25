@@ -40,21 +40,22 @@ class AuxMixin:
         """Record one search ('search') or feedback ('feedback') event and return its row id (None when logging failed).
         shown = ids the search listed, best first; search_id = for 'get' / 'feedback', the event that listed the note.
         Never raises: logging must not break recall."""
+        if self.readonly:
+            return None
         try:
             with self._lock, self.conn:
                 self._ensure_log()
                 cur = self.conn.execute(
                     "INSERT INTO usage_log(ts, kind, source, query, n_queries, n_results, note_id, helpful, search_id) "
                     "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (_now(), kind, source, strip_private(query or "")[0][:200], n_queries, n_results, note_id,
+                    (_now(), kind, source, "", n_queries, n_results, note_id,
                      None if helpful is None else int(bool(helpful)), search_id))
                 eid = cur.lastrowid
                 if shown:
                     self.conn.executemany("INSERT OR IGNORE INTO recall_shown(event_id, note_id, rank) VALUES (?,?,?)",
                                           [(eid, int(i), r) for r, i in enumerate(dict.fromkeys(shown))])
-                if self.conn.execute("SELECT COUNT(*) FROM usage_log").fetchone()[0] % 200 == 0:
-                    self.conn.execute("DELETE FROM usage_log WHERE ts < ?", (_now() - keep_days * 86400,))
-                    self.conn.execute("DELETE FROM recall_shown WHERE event_id NOT IN (SELECT id FROM usage_log)")
+                self.conn.execute("DELETE FROM usage_log WHERE ts < ?", (_now() - keep_days * 86400,))
+                self.conn.execute("DELETE FROM recall_shown WHERE event_id NOT IN (SELECT id FROM usage_log)")
                 return eid
         except Exception:
             return None
@@ -67,8 +68,6 @@ class AuxMixin:
             tot = q("SELECT source, COUNT(*), SUM(n_results=0), SUM(n_queries>1) FROM usage_log "
                     "WHERE kind='search' AND ts>=? GROUP BY source", since)
             fb = q("SELECT helpful, COUNT(*) FROM usage_log WHERE kind='feedback' AND ts>=? GROUP BY helpful", since)
-            miss = q("SELECT query, ts FROM usage_log WHERE kind='search' AND n_results=0 AND ts>=? "
-                     "ORDER BY ts DESC LIMIT 15", since)
             gets = self.conn.execute("SELECT COUNT(*) FROM usage_log WHERE kind='get' AND ts>=?", (since,)).fetchone()[0]
             nonotes = self.conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
             llm = q("SELECT kind, COUNT(*), COALESCE(SUM(n_queries),0), SUM(n_results<0 OR (kind='rerank' AND n_results=0)) "
@@ -77,7 +76,7 @@ class AuxMixin:
                 "llm": {r[0]: {"calls": r[1], "prompt_tokens": r[2], "no_answer": r[3] or 0} for r in llm},
                 "searches": {r[0] or "?": {"count": r[1], "zero_result": r[2] or 0, "with_rewrites": r[3] or 0} for r in tot},
                 "feedback": {("helpful" if r[0] else "not_helpful"): r[1] for r in fb},
-                "recent_zero_result_queries": [r[0] for r in miss]}
+                "recent_zero_result_queries": []}
 
     def replace_summaries(self, entity: str, items: list, now: float | None = None) -> list[int]:
         """Replace the consolidated summaries of one entity. *items* = [(text, [source note ids]), ...]. Summaries are
@@ -86,15 +85,17 @@ class AuxMixin:
         now = _now() if now is None else now
         key = "summary:" + entity
         with self._lock, self.conn:
-            old = [r[0] for r in self.conn.execute("SELECT id FROM notes WHERE kind='summary' AND source_session=?", (key,))]
+            old = [r[0] for r in self.conn.execute("SELECT id FROM notes WHERE kind='summary' AND source_session=? AND scope=?", (key, self.scope))]
             if old:
                 self._delete_ids(old)
             ids = []
             for text, srcs in items:
                 srcs = sorted({int(i) for i in srcs})
+                if len(self._owned_ids(srcs)) != len(srcs):
+                    raise ValueError("all summary sources must belong to its scope")
                 nid, created = self.add(f"{text.strip()} (綜合 {' '.join('#%d' % i for i in srcs)})", kind="summary",
                                         entities=[entity], source_session=key, proof_count=max(1, len(srcs)),
-                                        tags="summary", created_at=now)
+                                        tags="summary", created_at=now, commit=False)
                 if created:
                     self.conn.execute("UPDATE notes SET locked=1, consolidated_at=? WHERE id=?", (now, nid))
                     ids.append(nid)
@@ -105,15 +106,15 @@ class AuxMixin:
         stale_only: only entities that have no summary yet or got a newer note since their summary was written
         (the incremental 'keep the observations current' pass; the idea is credited to Hindsight)."""
         sql = ("SELECT e.name, COUNT(*) c, MAX(n.created_at) newest FROM entities e JOIN note_entities ne ON ne.entity_id=e.id "
-               "JOIN notes n ON n.id=ne.note_id AND n.status='active' AND n.review='active' AND n.kind!='summary' "
+               "JOIN notes n ON n.id=ne.note_id AND n.status='active' AND n.review='active' AND n.kind!='summary' AND n.scope=? "
                "GROUP BY e.id HAVING c BETWEEN ? AND ? ORDER BY c DESC")
         with self._lock:
-            rows = self.conn.execute(sql, (min_notes, max_notes)).fetchall()
+            rows = self.conn.execute(sql, (self.scope, min_notes, max_notes)).fetchall()
             if not stale_only:
                 return [(r[0], r[1]) for r in rows]
             made = dict(self.conn.execute(
                 "SELECT substr(source_session, 9), MAX(created_at) FROM notes WHERE kind='summary' "
-                "AND source_session LIKE 'summary:%' GROUP BY source_session"))
+                "AND source_session LIKE 'summary:%' AND scope=? GROUP BY source_session", (self.scope,)))
         return [(r[0], r[1]) for r in rows if r[0] not in made or r[2] > made[r[0]]]
 
     def entity_notes(self, entity: str, limit: int = 20) -> list[dict]:
@@ -121,8 +122,8 @@ class AuxMixin:
         with self._lock:
             rows = self.conn.execute(
                 "SELECT n.id, n.content, n.created_at FROM notes n JOIN note_entities ne ON ne.note_id=n.id "
-                "JOIN entities e ON e.id=ne.entity_id WHERE e.name=? AND n.status='active' AND n.review='active' AND n.kind!='summary' "
-                "ORDER BY n.created_at DESC, n.id DESC LIMIT ?", (entity, limit)).fetchall()
+                "JOIN entities e ON e.id=ne.entity_id WHERE e.name=? AND n.status='active' AND n.review='active' AND n.kind!='summary' AND n.scope=? "
+                "ORDER BY n.created_at DESC, n.id DESC LIMIT ?", (entity, self.scope, limit)).fetchall()
         return [dict(id=r[0], content=r[1], created_at=r[2]) for r in reversed(rows)]
 
     # -- semantic vectors (optional; computed by vec.py / embed_server.py, stored here as float32 BLOBs) ------------
@@ -132,13 +133,17 @@ class AuxMixin:
         with self._lock:
             return [(r[0], r[1][:500]) for r in self.conn.execute(
                 "SELECT n.id, n.content FROM notes n LEFT JOIN vectors v ON v.note_id=n.id AND v.model=? "
-                "WHERE n.status='active' AND v.note_id IS NULL ORDER BY n.id DESC LIMIT ?", (model, limit))]
+                "WHERE n.status='active' AND v.note_id IS NULL AND n.scope=? ORDER BY n.id DESC LIMIT ?", (model, self.scope, limit))]
 
-    def put_vectors(self, model: str, items: Iterable[tuple[int, bytes]]) -> int:
-        rows = [(i, model, sqlite3.Binary(b)) for i, b in items]
+    def put_vectors(self, model: str, items) -> int:
+        # A writer may edit or forget a note while the worker computes the
+        # embedding. Only attach it to the same current text and owner.
         with self._lock, self.conn:
-            self.conn.executemany("INSERT OR REPLACE INTO vectors(note_id, model, vec) VALUES (?,?,?)", rows)
-        return len(rows)
+            written = self.conn.executemany(
+                "INSERT OR REPLACE INTO vectors(note_id,model,vec) SELECT id,?,? FROM notes "
+                "WHERE id=? AND scope=? AND status='active' AND substr(content,1,500)=?",
+                ((model, sqlite3.Binary(blob), nid, self.scope, text) for nid, text, blob in items))
+            return written.rowcount
 
     def notes_by_ids(self, ids: Iterable[int], *, kind: str | None = None, since=None, until=None,
                      scope: str | None = None, tags: str | Iterable[str] = "", now: float | None = None,
@@ -182,6 +187,8 @@ class AuxMixin:
         with self._lock:
             self.flush_access()
             self.conn.close()
+            if self.snapshot is not None:
+                self.snapshot.close()
 
     def flush_access(self, now: float | None = None) -> int:
         now = _now() if now is None else now
@@ -194,9 +201,17 @@ class AuxMixin:
                                           [(n, now, i) for i, n in buf.items()])
             return len(buf)
 
+    def _owned_ids(self, ids):
+        ids = list(ids)
+        if not ids:
+            return []
+        return [r[0] for r in self.conn.execute(
+            f"SELECT id FROM notes WHERE scope=? AND id IN ({','.join('?' * len(ids))})", [self.scope, *ids])]
+
     def _note_access(self, ids: Iterable[int], now: float) -> None:
         if not self.track_access:
             return
-        self._access_buf.update(ids)
+        owned = self._owned_ids(ids)
+        self._access_buf.update(owned)
         if now - self._access_flushed >= ACCESS_FLUSH_SECONDS:
             self.flush_access(now)

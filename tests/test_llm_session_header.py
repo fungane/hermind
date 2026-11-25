@@ -19,8 +19,11 @@ def test_relay_session_header(monkeypatch, base, allowed):
         captured.append(request)
         return io.BytesIO(b'{"choices":[{"message":{"content":"ok"}}]}')
 
-    monkeypatch.setattr(urllib.request, "urlopen", answer)
+    monkeypatch.setattr("llm._send", answer)
     client = LLMClient({"base_url": base, "model": "stub"})
+    if base.startswith("http://"):
+        assert client.chat("A fictional note") is None and captured == []
+        return
     assert client.chat("A fictional note") == "ok"
     req, = captured
     headers = {k.lower(): v for k, v in req.header_items()}
@@ -41,7 +44,7 @@ def test_auth_only_on_initial_request(monkeypatch, caller):
         captured.append(request)
         return io.BytesIO(b'{"choices":[{"message":{"content":"ok"}}]}')
 
-    monkeypatch.setattr(urllib.request, "urlopen", answer)
+    monkeypatch.setattr("llm._send", answer)
     monkeypatch.setenv("FIXTURE_KEY", "fixture-only")
     cfg = dict(base_url="https://relay.example/v1", model="stub", api_key_env="FIXTURE_KEY",
                batch_size=1, timeout=1)

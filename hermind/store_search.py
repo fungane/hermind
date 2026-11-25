@@ -110,7 +110,7 @@ class SearchMixin:
             info = self._fetch(ids)
         stale = self.stale_ids(i for i in ids if i in info)
         fb_scale = max(0.0, min(1.0, float(W.get("openrate", 1.0))))
-        base = self.open_rate_base() if fb_scale > 0 and any(info[i]["shown_count"] for i in info) else None
+        base = self.open_rate_base(self._scopes(None)) if fb_scale > 0 and any(info[i]["shown_count"] for i in info) else None
         out = {}
         for i in ids:
             r = info.get(i)
@@ -133,10 +133,24 @@ class SearchMixin:
         s = _clean_scope(s)
         return [s] if s == "shared" else [s, "shared"]
 
-    def _live_stats(self, now: float) -> tuple[int, float, float]:
+    def _restricted_corpus(self, scopes):
+        """Keep the single-scope fast path when every note belongs to the visible corpus."""
+        if not scopes:
+            return None
+        placeholders = ",".join("?" * len(scopes))
+        if self.conn.execute(f"SELECT 1 FROM notes WHERE scope NOT IN ({placeholders}) LIMIT 1", scopes).fetchone():
+            return scopes
+        return None
+
+    @staticmethod
+    def _scope_filter(scopes):
+        return f" AND n.scope IN ({','.join('?' * len(scopes))})" if scopes else ""
+
+    def _live_stats(self, now: float, scopes=None) -> tuple[int, float, float]:
         r = self.conn.execute(
-            "SELECT COUNT(*), AVG(doc_len_content), AVG(doc_len_keywords) FROM notes "
-            "WHERE expires_at IS NULL OR expires_at > ? OR pinned=1", (now,)).fetchone()
+            "SELECT COUNT(*), AVG(doc_len_content), AVG(doc_len_keywords) FROM notes n "
+            "WHERE (expires_at IS NULL OR expires_at > ? OR pinned=1)" + self._scope_filter(scopes),
+            (now, *(scopes or []))).fetchone()
         return r[0] or 0, max(r[1] or 1.0, 1.0), max(r[2] or 1.0, 1.0)
 
     def _bm25_candidates(self, terms: dict[str, float], n_docs: int, avg_c: float, avg_k: float, now: float,
@@ -155,12 +169,16 @@ class SearchMixin:
         df_cache = {} if df_cache is None else df_cache
         W = {**self.weights, **(W or {})}
         fw_gen, fw_learned = float(W.get("gen_field", 0.5)), float(W.get("learned_field", 0.3))
+        restricted = self._restricted_corpus(scopes)
+        owners = " JOIN notes n ON n.id=note_id " if restricted else " "
+        visible = self._scope_filter(restricted)
+        bound = restricted or []
         missing = list({t for terms in term_sets for t in terms if t not in df_cache})
         for i in range(0, len(missing), 400):
             chunk = missing[i:i + 400]
             q = ",".join("?" * len(chunk))
             got = dict(self.conn.execute(
-                f"SELECT term, COUNT(DISTINCT note_id) FROM postings WHERE term IN ({q}) GROUP BY term", chunk))
+                f"SELECT term, COUNT(DISTINCT note_id) FROM postings{owners}WHERE term IN ({q}){visible} GROUP BY term", [*chunk, *bound]))
             df_cache.update({t: got.get(t, 0) for t in chunk})
         maxidf = math.log(1 + (n_docs + 0.5) / 1.5)
         qrows, totals = [], []
@@ -183,8 +201,8 @@ class SearchMixin:
                 # (a bounded scan: scoring every posting of a word in most notes costs ~25x a normal search)
                 _, t, w, c, i = min(skipped)
                 lo = self.conn.execute(
-                    "SELECT MIN(note_id) FROM (SELECT DISTINCT note_id FROM postings WHERE term=? "
-                    "ORDER BY note_id DESC LIMIT ?)", (t, COMMON_FALLBACK_POSTINGS)).fetchone()[0] or 0
+                    f"SELECT MIN(note_id) FROM (SELECT DISTINCT note_id FROM postings{owners}WHERE term=?{visible} "
+                    "ORDER BY note_id DESC LIMIT ?)", (t, *bound, COMMON_FALLBACK_POSTINGS)).fetchone()[0] or 0
                 qrows.append((t, w, c, i, lo))
             totals.append(sum(concept_max.values()) or 1.0)
         out: list[tuple] = [({}, {}, {}) for _ in term_sets]
@@ -236,19 +254,30 @@ class SearchMixin:
             matched[nid] = mv / totals[qi]
         return out
 
-    def _graph_arm(self, seeds, q_ents, n_docs, W, idf) -> dict[int, float]:
+    def _graph_arm(self, seeds, q_ents, n_docs, W, idf, scopes=None) -> dict[int, float]:
         """One-hop graph signal: notes sharing the top hits' rarer entities, plus neighbours of the query's entities."""
         hop_w: dict[int, float] = defaultdict(float)
         max_df = max(3, int(0.08 * n_docs))
+        owners = " JOIN notes n ON n.id=note_id " if scopes else " "
+        visible = self._scope_filter(scopes)
+        bound = scopes or []
         for rank, (nid, ents) in enumerate(
-                sorted(self.note_entities(seeds).items(), key=lambda x: seeds.index(x[0]))):
+                sorted(self.note_entities(seeds, scopes=scopes).items(), key=lambda x: seeds.index(x[0]))):
             for eid, _, df in ents:
                 if 1 < df <= max_df and eid not in q_ents:
                     hop_w[eid] += idf(df) / (1 + rank)
         for eid in list(q_ents)[:6]:
-            for r in self.conn.execute(
+            if scopes:
+                neighbors = self.conn.execute(
+                    "SELECT peer.entity_id, COUNT(*) FROM note_entities own JOIN notes n ON n.id=own.note_id "
+                    "JOIN note_entities peer ON peer.note_id=n.id AND peer.entity_id!=own.entity_id "
+                    "WHERE own.entity_id=?" + visible + " GROUP BY peer.entity_id ORDER BY COUNT(*) DESC,peer.entity_id LIMIT 3",
+                    (eid, *bound))
+            else:
+                neighbors = self.conn.execute(
                     "SELECT CASE WHEN a=? THEN b ELSE a END, weight FROM entity_links WHERE a=? OR b=? "
-                    "ORDER BY weight DESC, a, b LIMIT 3", (eid, eid, eid)):
+                    "ORDER BY weight DESC, a, b LIMIT 3", (eid, eid, eid))
+            for r in neighbors:
                 hop_w[r[0]] += 0.5 * min(1.0, r[1] / 5.0)
         graph_score: dict[int, float] = defaultdict(float)
         if hop_w:
@@ -257,12 +286,12 @@ class SearchMixin:
             fanout = int(W.get("graph_fanout") or 0)
             if fanout:  # cap notes per entity (newest first) so a hub entity cannot flood the arm
                 pairs = [(nid, eid) for eid, _ in top for (nid,) in self.conn.execute(
-                    "SELECT note_id FROM note_entities WHERE entity_id=? ORDER BY note_id DESC LIMIT ?",
-                    (eid, fanout))]
+                    f"SELECT note_id FROM note_entities{owners}WHERE entity_id=?{visible} ORDER BY note_id DESC LIMIT ?",
+                    (eid, *bound, fanout))]
             else:
                 q = ",".join("?" * len(top))
-                pairs = self.conn.execute(f"SELECT note_id, entity_id FROM note_entities WHERE entity_id IN ({q})",
-                                          [e for e, _ in top]).fetchall()
+                pairs = self.conn.execute(f"SELECT note_id, entity_id FROM note_entities{owners}WHERE entity_id IN ({q}){visible}",
+                                          [*(e for e, _ in top), *bound]).fetchall()
             shared: dict[int, int] = defaultdict(int)
             for nid, eid in pairs:
                 if nid not in seeds:
@@ -277,13 +306,14 @@ class SearchMixin:
                     graph_score[nid] = math.tanh(0.5 * shared[nid]) + graph_score[nid] / wmax
         return graph_score
 
-    def _temporal_arm(self, qwin) -> dict[int, float]:
+    def _temporal_arm(self, qwin, scopes=None) -> dict[int, float]:
         """Notes dated inside or near the query's time window, closer to its middle scoring higher."""
         temporal: dict[int, float] = {}
         if qwin:
             for r in self.conn.execute(
-                    "SELECT id, COALESCE(event_at, created_at) FROM notes WHERE COALESCE(event_at, created_at) "
-                    ">= ? AND COALESCE(event_at, created_at) < ? LIMIT 400", (qwin[0] - DAY, qwin[1] + DAY)):
+                    "SELECT id, COALESCE(event_at, created_at) FROM notes n WHERE COALESCE(event_at, created_at) "
+                    ">= ? AND COALESCE(event_at, created_at) < ?" + self._scope_filter(scopes) + " LIMIT 400",
+                    (qwin[0] - DAY, qwin[1] + DAY, *(scopes or []))):
                 mid = (qwin[0] + qwin[1]) / 2
                 temporal[r[0]] = 1.0 / (1.0 + abs(r[1] - mid) / DAY)
         return temporal
@@ -314,7 +344,7 @@ class SearchMixin:
             ok.append(i)
         return ok
 
-    def _rescore(self, fused, info, recency, now, W, rule=None, shared=None):
+    def _rescore(self, fused, info, recency, now, W, rule=None, shared=None, scopes=None):
         """Multiplicative adjustments after fusion: trust, idle decay, pending review, open-rate, stale, recency, and, last,
         the project penalty (rule: a project.ProjectRule, only the automatic recall passes one).
 
@@ -343,7 +373,7 @@ class SearchMixin:
             fused = apply(fused, lambda i: _pending_factor(info[i], W))
         fb_scale = max(0.0, min(1.0, float(W.get("openrate", 1.0))))
         if fb_scale > 0 and any(info[i]["shown_count"] for i, _ in fused):
-            base = self.open_rate_base()    # notes people open once shown drift up, ignored ones down (+-10% at most)
+            base = self.open_rate_base(scopes)    # notes people open once shown drift up, ignored ones down (+-10% at most)
             fused = apply(fused, lambda i: open_rate_factor(info[i]["shown_count"], info[i]["opened_count"], info[i]["fb_at"],
                                                             now, base, FB_MAX_EFFECT * fb_scale))
         stale = self.stale_ids(i for i, _ in fused)
@@ -394,41 +424,49 @@ class SearchMixin:
         terms = (_shared or {}).get("terms", {}).get(query) or self._query_terms(query)
         qwin = query_time_window(query, now)
         with self._lock:
+            scopes = self._scopes(scope)
+            restricted = self._restricted_corpus(scopes)
             if _shared is not None:  # search_multi: corpus stats computed once for all its queries
                 if "stats" not in _shared:
-                    _shared["stats"] = self._live_stats(now)
+                    _shared["stats"] = self._live_stats(now, restricted)
                 n_docs, avg_c, avg_k = _shared["stats"]
             else:
-                n_docs, avg_c, avg_k = self._live_stats(now)
+                n_docs, avg_c, avg_k = self._live_stats(now, restricted)
             if not n_docs:
                 return []
             n_cand = int(W.get("candidates", 200))
-            scopes = self._scopes(scope)
             want_tags = _clean_tags(tags).split()
             if _shared is not None and query in _shared.get("bm25", {}):
                 bm, kws, matched = (dict(d) for d in _shared["bm25"][query])
             else:
                 bm, kws, matched = (self._bm25_multi([terms], n_docs, avg_c, avg_k, now, n_cand, window, scopes,
                                                      W=W, rare_fallback=rare_fallback)[0] if terms else ({}, {}, {}))
-            q_ents = self.detect_entities(query)
+            q_ents = self.detect_entities(query, scopes=scopes)
             ent_df = {}
             if q_ents:
                 q = ",".join("?" * len(q_ents))
-                ent_df = dict(self.conn.execute(f"SELECT id, df FROM entities WHERE id IN ({q})", list(q_ents)))
+                if restricted:
+                    ent_df = dict(self.conn.execute(
+                        f"SELECT entity_id, COUNT(*) FROM note_entities JOIN notes n ON n.id=note_id WHERE entity_id IN ({q})"
+                        + self._scope_filter(restricted) + " GROUP BY entity_id", [*q_ents, *restricted]))
+                    q_ents = {eid: weight for eid, weight in q_ents.items() if eid in ent_df}
+                else:
+                    ent_df = dict(self.conn.execute(f"SELECT id, df FROM entities WHERE id IN ({q})", list(q_ents)))
             idf = lambda df: math.log(1 + n_docs / (1 + df))  # noqa: E731
             # entity signal: notes linked to query entities
             ent_score: dict[int, float] = defaultdict(float)
             if q_ents:
                 q = ",".join("?" * len(q_ents))
                 for nid, eid in self.conn.execute(
-                        f"SELECT note_id, entity_id FROM note_entities WHERE entity_id IN ({q})", list(q_ents)):
+                        f"SELECT note_id, entity_id FROM note_entities JOIN notes n ON n.id=note_id WHERE entity_id IN ({q})"
+                        + self._scope_filter(restricted), [*q_ents, *(restricted or [])]):
                     ent_score[nid] += q_ents[eid] * idf(ent_df.get(eid, 0))
             # preliminary fused list -> seeds for the one-hop expansion
             prelim = self._rrf({"bm25": bm, "keywords": kws, "entity": ent_score}, W, kconst, self.boost)
             seeds = [nid for nid, _ in prelim[:5]]
-            graph_score = self._graph_arm(seeds, q_ents, n_docs, W, idf)
+            graph_score = self._graph_arm(seeds, q_ents, n_docs, W, idf, restricted)
             # temporal signal: notes dated inside / near the query's time window
-            temporal = self._temporal_arm(qwin)
+            temporal = self._temporal_arm(qwin, restricted)
             # restrict non-lexical lists to the strongest few hundred
             ent_score = dict(sorted(ent_score.items(), key=lambda x: (-x[1], -bm.get(x[0], 0.0)))[:n_cand])
             graph_score = dict(sorted(graph_score.items(), key=lambda x: (-x[1], -bm.get(x[0], 0.0)))[:n_cand // 2])
@@ -447,7 +485,7 @@ class SearchMixin:
                         if i in sig:
                             v = sig.pop(i) * fold
                             c = info[i]["canonical_id"]
-                            if c and c in info and info[c]["status"] == "active" and v > sig.get(c, 0.0):
+                            if c and c in info and info[c]["scope"] == info[i]["scope"] and info[c]["status"] == "active" and v > sig.get(c, 0.0):
                                 sig[c] = v
                 cand = {i for i in set(bm) | set(ent_score) | set(graph_score) | set(temporal)
                         if i in info and info[i]["status"] in keep_status}
@@ -474,7 +512,7 @@ class SearchMixin:
             fused = self._interleave([lists[a] for a in SOURCE_ARMS])
             return [self._row(info[i]) | {"score": 0.0} for i, _ in fused[:max(1, int(limit))]]
         fused = self._rrf(lists, W, kconst, self.boost)
-        fused, stale = self._rescore(fused, info, recency, now, W, self.project_rule(project), shared=_shared)
+        fused, stale = self._rescore(fused, info, recency, now, W, self.project_rule(project), shared=_shared, scopes=scopes)
         ordered = self._diversify(fused, info, limit, float(W.get("diversity", 0.6)))
         out = []
         if track:
@@ -517,7 +555,7 @@ class SearchMixin:
             window = (s_since if s_since is not None else 0.0,
                       day_bounds(s_until)[1] if s_until is not None else 1e18)   # a local day is 23 or 25 h on a DST day
         with self._lock:
-            shared["stats"] = self._live_stats(now)
+            shared["stats"] = self._live_stats(now, self._scopes(filters.get("scope")))
             if shared["stats"][0]:
                 with_terms = [q for q in qs if shared["terms"][q]]
                 res = self._bm25_multi([shared["terms"][q] for q in with_terms], *shared["stats"], now,
@@ -619,8 +657,10 @@ class SearchMixin:
         if not hits:
             return {"query": query, "groups": [], "conflicts": [], "count": 0}
         with self._lock:
-            q_ents = self.detect_entities(query)
-            ents = self.note_entities([h["id"] for h in hits])
+            scopes = self._scopes(kw.get("scope"))
+            restricted = self._restricted_corpus(scopes)
+            q_ents = self.detect_entities(query, scopes=scopes)
+            ents = self.note_entities([h["id"] for h in hits], scopes=restricted)
         counts = Counter(eid for h in hits for eid, _, _ in ents.get(h["id"], []))
         names = {eid: name for h in hits for eid, name, _ in ents.get(h["id"], [])}
         dfs = {eid: df for h in hits for eid, _, df in ents.get(h["id"], [])}

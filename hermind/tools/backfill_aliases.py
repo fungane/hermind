@@ -60,20 +60,18 @@ def log_event(fh, **event) -> None:
     fh.flush()
 
 
+def model_client(cfg, **extra):
+    from llm import LLMClient
+    settings = dict(vars(cfg))
+    custom = settings.get("extra_body") or {}
+    if isinstance(custom, str):
+        custom = json.loads(custom)
+    settings["extra_body"] = {"temperature": 0.3, **custom, **extra}
+    return LLMClient(settings)
+
+
 def call_llm(cfg: argparse.Namespace, prompt: str) -> str:
-    """One chat completion; raises on HTTP / network / timeout errors."""
-    payload = {"model": cfg.model, "temperature": 0.3, "max_tokens": 300 * cfg.batch_size,
-               "messages": [{"role": "user", "content": prompt}]}
-    payload.update(json.loads(cfg.extra_body) if getattr(cfg, "extra_body", "") else {})   # e.g. switch a reasoning model's thinking off
-    body = json.dumps(payload).encode()
-    headers = {"Content-Type": "application/json"}
-    key = os.environ.get(cfg.api_key_env, "") if cfg.api_key_env else ""
-    req = urllib.request.Request(cfg.base_url.rstrip("/") + "/chat/completions", data=body, headers=headers)
-    if key:
-        req.add_unredirected_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8", "replace"))
-    return str(data["choices"][0]["message"]["content"] or "")
+    return model_client(cfg).chat(prompt, max_tokens=300 * cfg.batch_size) or ""
 
 
 def parse_items(text: str) -> list | None:
@@ -131,7 +129,10 @@ def process_batch(cfg, batch: list[dict]) -> tuple[list[dict], dict | None, str 
     """Returns (batch, {id: item}, error). Retries transport errors / timeouts / unparsable answers on the primary
     model, then tries each fallback model once (free models are flaky: 404, 429, malformed JSON). Each item carries
     '_model', the model that actually answered."""
-    prompt = PROMPT + "\n".join(json.dumps({"id": n["id"], "note": redact_pii(n["content"])[0][:600]}, ensure_ascii=False)
+    client = model_client(cfg)
+    if any(client.public_text(n["content"]) is None for n in batch):
+        return batch, None, "note blocked by privacy policy"
+    prompt = PROMPT + "\n".join(json.dumps({"id": n["id"], "note": client.public_text(n["content"])[:600]}, ensure_ascii=False)
                                 for n in batch)
     err = None
     for mi, model in enumerate(_models(cfg)):
@@ -141,12 +142,12 @@ def process_batch(cfg, batch: list[dict]) -> tuple[list[dict], dict | None, str 
             try:
                 items = parse_items(call_llm(c, prompt))
                 if items is None:
-                    err = f"{model}: malformed output"
+                    err = "malformed model response"
                 else:
                     out = {str(i.get("id")): {**i, "_model": model} for i in items if isinstance(i, dict)}
                     return batch, out, None
             except Exception as exc:  # timeout, HTTP error, connection refused, bad JSON envelope ...
-                err = redact_pii(f"{model}: {type(exc).__name__}: {exc}")[0][:200]
+                err = type(exc).__name__
             if attempt < attempts - 1:
                 time.sleep(min(8.0, cfg.retry_wait * (2 ** attempt)))
     return batch, None, err
@@ -225,7 +226,7 @@ def _collect(cfg, store: DecisionStore, result, stats: dict, out) -> None:
         if not cfg.dry_run:
             store.set_gen_keywords(n["id"], aliases, model=item.get("_model") or cfg.model)
         stats["written"] += 0 if cfg.dry_run else 1
-        log_event(out, event="note_done" if not cfg.dry_run else "note_preview", id=n["id"], aliases=aliases)
+        log_event(out, event="note_done" if not cfg.dry_run else "note_preview", id=n["id"], count=len(aliases))
 
 
 def _env(name: str, default: str = "") -> str:

@@ -88,9 +88,9 @@ def test_hook_does_not_search_private_text(db):
     assert "migrated" in ctx and "Alice" not in ctx
 
 
-def test_hook_reads_only_the_start_of_a_huge_prompt(db):
+def test_hook_skips_oversized_input(db):
     big = "when do we migrate the staging database " + ("filler words " * 200000)
-    assert "migrated" in context(hook(big, db_path=db))
+    assert context(hook(big, db_path=db)) == ""
 
 
 def test_hook_honours_the_database_env_var(db):

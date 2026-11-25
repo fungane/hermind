@@ -46,7 +46,7 @@ def test_a_v5_database_is_backed_up_then_upgraded_and_keeps_every_row(tmp_path):
     ids = _v5_db(db)
     s = DecisionStore(str(db))
     try:
-        assert s.conn.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert s.conn.execute("PRAGMA user_version").fetchone()[0] == 7
         assert "project" in {r[1] for r in s.conn.execute("PRAGMA table_info(notes)")}
         assert [s.get(i)["content"] for i in ids] == [f"Atlas decision number {n}: orders use PostgreSQL {n}" for n in range(3)]
         assert set(_projects(s).values()) == {None}

@@ -58,16 +58,17 @@ class FeedbackMixin:
         except Exception:
             return False
 
-    def open_rate_base(self) -> float:
+    def open_rate_base(self, scopes=None) -> float:
         """Corpus-wide smoothed open rate (the neutral point of the prior); cached for a minute."""
+        scope_key = tuple(scopes or ())
         hit = self.__dict__.get("_fb_base")
-        if hit is not None and time.monotonic() - hit[0] < _BASE_TTL:
+        if hit is not None and hit[2] == scope_key and time.monotonic() - hit[0] < _BASE_TTL:
             return hit[1]
         with self._lock:
-            o, s = self.conn.execute("SELECT COALESCE(SUM(opened_count),0), COALESCE(SUM(shown_count),0) FROM notes "
-                                     "WHERE shown_count > 0").fetchone()
+            o, s = self.conn.execute("SELECT COALESCE(SUM(opened_count),0), COALESCE(SUM(shown_count),0) FROM notes n "
+                                     "WHERE shown_count > 0" + self._scope_filter(scopes), scope_key).fetchone()
         base = (o + 1.0) / (s + 5.0)
-        self.__dict__["_fb_base"] = (time.monotonic(), base)
+        self.__dict__["_fb_base"] = (time.monotonic(), base, scope_key)
         return base
 
     def open_rate_report(self, top: int = 5, now: float | None = None) -> dict:

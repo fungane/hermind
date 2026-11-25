@@ -97,8 +97,9 @@ def check_text(content: str, keywords: str | Iterable[str] = "", *, screen: bool
     preview can ask the question without writing. (The "forgotten earlier" rule needs the tombstones table:
     FORGOTTEN_REFUSAL, is_forgotten().)"""
     content, hidden = strip_private((content or "").strip())
-    if isinstance(keywords, str):
-        keywords, _ = strip_private(keywords)
+    if not isinstance(keywords, str):
+        keywords = " ".join(keywords or ())
+    keywords, _ = strip_private(keywords)
     content = content.strip()
     if not content:
         raise ValueError("content is empty")
@@ -145,6 +146,9 @@ class WriteMixin:
             raise ValueError("valid_to must be after valid_from")
         tags, entities = (tags if isinstance(tags, str) else list(tags or ())), list(entities or ())
         content, keywords = check_text(content, keywords, screen=screen, tags=tags, entities=entities)
+        source_session = strip_private_label(str(source_session or ""))
+        if looks_secret(source_session):
+            source_session = ""
         kind = (kind or "chat").strip().lower()
         if kind == "auto":
             kind = classify_kind(content)
@@ -164,9 +168,11 @@ class WriteMixin:
             expires_at = default_expiry(kind, created_at)
         h = _digest(content)
         with self._lock, (self.conn if commit else contextlib.nullcontext()):
-            if self.conn.execute("SELECT 1 FROM tombstones WHERE digest=?", (h,)).fetchone():
-                raise RefusedWrite(FORGOTTEN_REFUSAL)
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
             scope = _clean_scope(scope) if scope else self.scope
+            if self.is_forgotten(content, scope):
+                raise RefusedWrite(FORGOTTEN_REFUSAL)
             tags = _clean_tags(_public_tags(tags))
             row = self.conn.execute("SELECT id FROM notes WHERE content_hash=? AND scope=?", (h, scope)).fetchone()
             if row:
@@ -183,7 +189,7 @@ class WriteMixin:
                     "SELECT id, content FROM notes WHERE kind=? AND scope=? ORDER BY id DESC LIMIT 200", (kind, scope))]
                 seen = {r[0] for r in recent}
                 # plus the interleaved head of each retrieval arm, so an older near-identical twin is seen too
-                twins = [(i, self._content(i)) for i in self.dedup_candidates(content, kind=kind) if i not in seen]
+                twins = [(i, self._content(i, scope)) for i in self.dedup_candidates(content, kind=kind, scope=scope) if i not in seen]
                 for rid, rc in recent + twins:
                     if rc and jaccard(rc, content) >= dedup_threshold:
                         return rid, False
@@ -360,15 +366,16 @@ class WriteMixin:
             # one off for every deleted note that is linked to the entity: notes that share an entity lower it together
             self.conn.executemany("UPDATE entities SET df=df-? WHERE id=?", self.conn.execute(
                 f"SELECT COUNT(*), entity_id FROM note_entities WHERE note_id IN ({q}) GROUP BY entity_id", chunk).fetchall())
+            self.conn.execute(f"UPDATE notes SET status='active', canonical_id=NULL WHERE canonical_id IN ({q}) "
+                              "AND scope=(SELECT parent.scope FROM notes parent WHERE parent.id=notes.canonical_id)", chunk)
             for sql in (f"DELETE FROM postings WHERE note_id IN ({q})",
                         f"DELETE FROM learn_pending WHERE note_id IN ({q})",
                         f"DELETE FROM vectors WHERE note_id IN ({q})",
+                        f"DELETE FROM note_aliases WHERE note_id IN ({q})",
                         f"DELETE FROM note_entities WHERE note_id IN ({q})",
                         f"DELETE FROM notes WHERE id IN ({q})"):
                 self.conn.execute(sql, chunk)
             # Notes merged into / superseded by a deleted note come back as active rows.
-            self.conn.execute(f"UPDATE notes SET status='active', canonical_id=NULL WHERE canonical_id IN ({q})",
-                              chunk)
             self.conn.execute(f"DELETE FROM note_links WHERE src IN ({q}) OR dst IN ({q})", chunk + chunk)
 
     def forget(self, note_id: int, now: float | None = None) -> bool:
@@ -377,23 +384,28 @@ class WriteMixin:
         back as active notes."""
         now = _now() if now is None else now
         with self._lock, self.conn:
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
             row = self.conn.execute("SELECT content_hash FROM notes WHERE id=?", (note_id,)).fetchone()
             if not row:
                 return False
             behind = [r[0] for r in self.conn.execute(
-                "SELECT src FROM note_links WHERE dst=? AND rel IN ('merged_into', 'version_of')", (note_id,))]
+                "SELECT src FROM note_links JOIN notes a ON a.id=src JOIN notes b ON b.id=dst AND a.scope=b.scope WHERE dst=? AND rel IN ('merged_into', 'version_of')", (note_id,))]
             ids = [note_id] + behind
             q = ",".join("?" * len(ids))
-            self.conn.executemany("INSERT OR IGNORE INTO tombstones(digest, note_id, created_at) VALUES (?,?,?)",
-                                  [(_digest(r[0]), r[1], now) for r in self.conn.execute(
-                                      f"SELECT content, id FROM notes WHERE id IN ({q})", ids)])
+            self.conn.executemany("INSERT OR IGNORE INTO scoped_tombstones(scope, digest, note_id, created_at) VALUES (?,?,?,?)",
+                                  [(r[2], _digest(r[0]), r[1], now) for r in self.conn.execute(
+                                      f"SELECT content, id, scope FROM notes WHERE id IN ({q})", ids)])
             self._delete_ids(ids)
             return True
 
-    def is_forgotten(self, content: str) -> bool:
+    def is_forgotten(self, content: str, scope: str | None = None) -> bool:
         h = _digest(content)
         with self._lock:
-            return self.conn.execute("SELECT 1 FROM tombstones WHERE digest=?", (h,)).fetchone() is not None
+            return self.conn.execute(
+                "SELECT 1 FROM tombstones WHERE digest=? UNION ALL "
+                "SELECT 1 FROM scoped_tombstones WHERE scope=? AND digest=? LIMIT 1",
+                (h, scope or self.scope, h)).fetchone() is not None
 
     def feedback(self, note_id: int, helpful: bool) -> float | None:
         """Trust feedback: +0.1 when helpful, -0.2 when not (clamped 0..1). Returns the new trust, None if no note."""
@@ -404,7 +416,8 @@ class WriteMixin:
                 return None
             return round(self.conn.execute("SELECT trust FROM notes WHERE id=?", (note_id,)).fetchone()[0], 3)
 
-    def update(self, note_id: int, content: str, keywords: str | None = None, now: float | None = None) -> bool:
+    def update(self, note_id: int, content: str, keywords: str | None = None, now: float | None = None, *, hold: bool = False,
+               hold_pinned: bool = False) -> bool:
         """Replace a note's text in place (same id). Raises RefusedWrite for credential-like text and for text that was
         forgotten (tombstoned), like add(). The old text is kept as a hidden history row
         (status='superseded', valid_to=now, link 'version_of') so reflect/history still show what it said. The note
@@ -418,16 +431,20 @@ class WriteMixin:
             raise ValueError("content is empty")
         if hidden and not has_text_outside_private(content):
             raise RefusedWrite("refused: nothing is left after removing the <private> text")
+        if len(content) > MAX_NOTE_CHARS:
+            raise RefusedWrite("refused: note exceeds the size limit; store a summary")
         reason = looks_secret(content) or looks_secret(keywords or "")
         if reason:
             raise RefusedWrite(f"refused: {reason}; store a description without the secret value")
         with self._lock, self.conn:
-            if self.conn.execute("SELECT 1 FROM tombstones WHERE digest=?", (_digest(content),)).fetchone():
-                raise RefusedWrite(FORGOTTEN_REFUSAL)       # the same rule as add(): forgotten text does not come back
             self.conn.execute("DELETE FROM vectors WHERE note_id=?", (note_id,))   # text changed: re-embed later
             old = self.conn.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
             if not old:
                 return False
+            if self.is_forgotten(content, old["scope"]):
+                raise RefusedWrite(FORGOTTEN_REFUSAL)
+            if hold or (hold_pinned and old["pinned"]):
+                self.conn.execute("UPDATE notes SET review='pending' WHERE id=?", (note_id,))
             if keywords is None:
                 keywords = old["keywords"]
             keywords = " ".join(keywords.split())
@@ -495,6 +512,13 @@ class WriteMixin:
         keywords = " ".join((keywords or "").split())
         ctoks, ktoks = tokenize(content), tokenize(keywords)
         with self._lock, (self.conn if commit else contextlib.nullcontext()):
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            version_scope = _clean_scope(scope) if scope else self.scope
+            if not self.conn.execute("SELECT 1 FROM notes WHERE id=? AND scope=?", (note_id, version_scope)).fetchone():
+                raise ValueError("version and parent must have the same scope")
+            if self.is_forgotten(content, version_scope):
+                raise RefusedWrite(FORGOTTEN_REFUSAL)
             hist = self._insert_history_row(
                 content=content, kind=kind, keywords=keywords, created_at=created_at, expires_at=None,
                 source_session=source_session or "", pinned=int(bool(pinned)), doc_len_content=len(ctoks),
@@ -566,7 +590,7 @@ class WriteMixin:
 
     def find_by_content(self, content: str, source_session: str | None = None) -> int | None:
         """Id of the note whose normalised text equals *content* (optionally from one source), else None."""
-        sql, args = "SELECT id FROM notes WHERE content_hash=?", [_digest(content)]
+        sql, args = "SELECT id FROM notes WHERE content_hash=? AND scope=?", [_digest(content), self.scope]
         if source_session is not None:
             sql += " AND source_session=?"
             args.append(source_session)
@@ -574,16 +598,16 @@ class WriteMixin:
             r = self.conn.execute(sql + " ORDER BY id DESC LIMIT 1", args).fetchone()
         return r[0] if r else None
 
-    def _content(self, note_id: int) -> str:
-        r = self.conn.execute("SELECT content FROM notes WHERE id=?", (note_id,)).fetchone()
+    def _content(self, note_id: int, scope=None) -> str:
+        r = self.conn.execute("SELECT content FROM notes WHERE id=? AND scope=?", (note_id, scope or self.scope)).fetchone()
         return r[0] if r else ""
 
-    def dedup_candidates(self, content: str, kind: str | None = None, per_arm: int = 3) -> list[int]:
+    def dedup_candidates(self, content: str, kind: str | None = None, per_arm: int = 3, scope=None) -> list[int]:
         """Twin candidates for dedup: the interleaved heads of the retrieval arms (each arm's #1, #2, ...), so a
         near-identical note is seen even when plain RRF would rank it below notes strong on several arms."""
         try:
             return [h["id"] for h in self.search(core_text(content)[:400], limit=per_arm * len(SOURCE_ARMS),
-                                                 kind=kind, fusion="interleave", rare_fallback=False)]
+                                                 kind=kind, fusion="interleave", rare_fallback=False, scope=scope, track=False)]
         except Exception:  # never let a dedup probe break a write
             return []
 

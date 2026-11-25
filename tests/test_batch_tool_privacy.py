@@ -85,8 +85,8 @@ def test_batch_tool_redacts_at_http_boundary(tool, dry_run, store, tmp_path):
     for stream in (proc.stdout, proc.stderr, log_text):
         assert source_email not in stream and reply_email not in stream and private not in stream
     events = [json.loads(line) for line in log_text.splitlines()]
-    assert [e[field] for e in events if e["event"] == event and field in e] == (
-        [[generated + " card"]] if summary else [[generated, "card"]])
+    assert [e["count"] for e in events if e["event"] == event] == [1 if summary else 2]
+    assert all(field not in e for e in events)
 
     assert tuple(store.conn.execute("SELECT content, keywords FROM notes WHERE id=?", (nid,)).fetchone()) == (
         content, "draft")

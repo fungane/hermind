@@ -82,6 +82,7 @@ class Entry:
     version_of: int | None = None             # an older version of the live entry with this source_id (outcome `version`)
     version_rel: str | None = ""              # older version's link; None suppresses the fallback for a private relation
     after: dict | None = None                 # set on the new note after it is written (see DecisionStore.restore_fields)
+    note_aliases: tuple | None = None
     entities: tuple | None = None             # ((name, (alias, ...)), ...): exactly the entities the source gives the note
                                               # (None: the source says nothing, the store finds them in the text)
     links: tuple = ()                         # ((source id of another note, rel), ...): the outgoing links the source gives
@@ -150,7 +151,7 @@ class EmptyView:
     """A database that does not exist yet: nothing is in it."""
     exists = False
 
-    def forgotten(self, digest: str) -> bool:
+    def forgotten(self, digest: str, scope: str) -> bool:
         return False
 
     def find(self, digest: str, scope: str):
@@ -182,7 +183,10 @@ class View(EmptyView):
         self._tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self._cols = {r[1] for r in conn.execute("PRAGMA table_info(notes)")} if "notes" in self._tables else set()
 
-    def forgotten(self, digest: str) -> bool:
+    def forgotten(self, digest: str, scope: str) -> bool:
+        if "scoped_tombstones" in self._tables and self.conn.execute(
+                "SELECT 1 FROM scoped_tombstones WHERE scope=? AND digest=?", (scope, digest)).fetchone():
+            return True
         return "tombstones" in self._tables and \
             self.conn.execute("SELECT 1 FROM tombstones WHERE digest=?", (digest,)).fetchone() is not None
 
@@ -307,6 +311,7 @@ class Plan:
     notes: list[str] = field(default_factory=list)       # metadata that could not be used and was dropped, and why
     source_id: int | None = None
     after: dict | None = None
+    note_aliases: tuple | None = None
     entities: tuple | None = None
     links: tuple = ()
     version: dict | None = None                          # an older version: {"of": source id, "status", "rel", "origin"}
@@ -361,7 +366,7 @@ def plan_entry(entry: Entry, reader: str) -> Plan:
         try:
             created = parse_valid(entry.created)
         except ValueError:
-            notes.append(f"created dropped: {entry.created!r} is not a date Hermind can read")
+            notes.append("created dropped: expected an ISO date or timestamp")
     dates, bad = {}, []
     for name, raw in (("valid_from", entry.valid_from), ("valid_to", entry.valid_to)):
         try:
@@ -376,7 +381,7 @@ def plan_entry(entry: Entry, reader: str) -> Plan:
         notes.append("valid_from and valid_to dropped: valid_to is not after valid_from")
     kind = (entry.kind or "").strip().lower()
     if kind and kind not in KINDS:
-        notes.append(f"kind dropped: {kind!r} is not a kind Hermind knows; chosen from the text")
+        notes.append("kind dropped: unsupported kind; chosen from the text")
         kind = ""
     kind = kind or classify_kind(content)
     trust = None
@@ -385,13 +390,13 @@ def plan_entry(entry: Entry, reader: str) -> Plan:
             trust = _trust(entry.trust)
         except (ValueError, TypeError) as exc:
             why = "outside 0 to 1" if "outside" in str(exc) else "not a number"
-            notes.append(f"trust dropped: {entry.trust!r} is {why}; a number from 0 to 1 is needed")
+            notes.append(f"trust dropped: {why}; a number from 0 to 1 is needed")
     return Plan(content=content, keywords=" ".join(str(keywords).split()), kind=kind, created_at=created,
                 tags=[str(t) for t in entry.tags], pinned=bool(entry.pinned),
                 source_session=entry.source_session or f"import:{reader}", valid_from=dates["valid_from"],
                 valid_to=dates["valid_to"], review="pending" if entry.pending else "active", trust=trust,
                 scope=_clean_scope(entry.scope) if entry.scope else None, notes=notes, source_id=entry.source_id,
-                after=entry.after, entities=None if entry.entities is None else tuple(entry.entities),
+                after=entry.after, note_aliases=entry.note_aliases, entities=None if entry.entities is None else tuple(entry.entities),
                 links=tuple(entry.links))
 
 
@@ -470,10 +475,13 @@ def _resolve_versions(entries: list[Entry], decisions: list[Decision], view, rea
         except ValueError as exc:
             d.outcome, d.reason = ("empty", "no text") if str(exc) == "content is empty" else ("refused", f"refused: {exc}")
             continue
-        if view.forgotten(_digest(plan.content)):
+        plan.scope = _clean_scope(e.scope) if e.scope else ld.plan.scope
+        if view.forgotten(_digest(plan.content), plan.scope):
             d.outcome, d.reason = "refused", FORGOTTEN_REFUSAL
             continue
-        plan.scope = _clean_scope(e.scope) if e.scope else ld.plan.scope
+        if plan.scope != ld.plan.scope:
+            d.outcome, d.reason = "refused", "version and parent have different scopes"
+            continue
         plan.version = {"of": e.version_of, "status": e.status if e.status in HISTORY_STATUSES else "superseded",
                         "rel": "version_of" if e.version_rel == "" else e.version_rel, "origin": le.origin}
         d.outcome, d.plan, d.text, d.reason = "version", plan, _snippet(plan.content), "; ".join(plan.notes)
@@ -528,7 +536,7 @@ def _decide_all(entries: list[Entry], view, *, reader: str, scope: str = DEFAULT
                 d.outcome, d.reason = "empty", "no text"
                 continue
             else:
-                if view.forgotten(_digest(cleaned)):
+                if view.forgotten(_digest(cleaned), scope):
                     d.outcome, d.reason = "refused", FORGOTTEN_REFUSAL
                     continue
         try:
@@ -543,7 +551,7 @@ def _decide_all(entries: list[Entry], view, *, reader: str, scope: str = DEFAULT
                 d.outcome, d.reason = "refused", f"refused: {exc}"
             continue
         digest = _digest(plan.content)
-        if view.forgotten(digest):
+        if view.forgotten(digest, scope):
             d.outcome, d.reason = "refused", FORGOTTEN_REFUSAL
             continue
         row = view.find(digest, scope)
@@ -655,7 +663,7 @@ def make_backup(db: Path, key: str | None) -> dict:
     try:
         b = backup_database(db, prefix="bak-import", keep=KEEP_IMPORT_BACKUPS, key=key)
     except BackupError as exc:
-        raise ImportFailed(f"backup failed, nothing was written: {exc}") from exc
+        raise ImportBackupFailed("backup failed, nothing was written; check disk space, permissions and key settings") from exc
     if b is None:
         return {"backup": None, "backup_removed": 0, "backup_note": "no backup needed: the database did not exist yet"}
     return {"backup": str(b.path), "backup_removed": b.removed, "backup_note": ""}
@@ -791,8 +799,8 @@ def _finish_hermind_parts(store, batch_id: str, decisions: list[Decision], writt
         for d in made:                                              # links between two notes this import wrote
             for to, rel in d.plan.links:
                 if to in written:
-                    store.conn.execute("INSERT OR IGNORE INTO note_links(src, dst, rel, created_at) VALUES (?,?,?,?)",
-                                       (d.note_id, written[to], rel, t))
+                    store.conn.execute("INSERT OR IGNORE INTO note_links(src, dst, rel, created_at) SELECT a.id,b.id,?,? FROM notes a JOIN notes b ON a.scope=b.scope WHERE a.id=? AND b.id=?",
+                                       (rel, t, d.note_id, written[to]))
             # An older version whose own link points at a middle note (merged into a note that was merged in turn) got a
             # link to its canonical note when it was written; the source has no such link, so take it out again.
             v = d.plan.version if d.outcome == "version" else None
@@ -802,8 +810,13 @@ def _finish_hermind_parts(store, batch_id: str, decisions: list[Decision], writt
                                    (d.note_id, written[v["of"]], v["rel"]))
         aliases: dict[str, tuple[str, list[str]]] = {}              # entity key -> (name, aliases the source gives it)
         for d in made:
+            owned_labels = dict(d.plan.note_aliases or ())
             for name, als in d.plan.entities or ():
                 k = _entity_key(name)
+                owner = store.conn.execute("SELECT e.id FROM entities e JOIN note_entities ne ON ne.entity_id=e.id "
+                                           "WHERE e.key=? AND ne.note_id=?", (k, d.note_id)).fetchone()
+                if owner is not None:
+                    store._record_aliases(d.note_id, owner[0], [label for label in owned_labels.get(name, ()) if label in als])
                 have = aliases.setdefault(k, (name, []))[1]
                 have.extend(a for a in als if a and a not in have)
         for k, (name, als) in aliases.items():
@@ -961,6 +974,10 @@ class ImportFailed(Exception):
     """A real error (unreadable source, unknown reader, ambiguous source): the command exits non-zero."""
 
 
+class ImportBackupFailed(ImportFailed):
+    """A failure before the first import transaction."""
+
+
 def run_import(source: str, db: Path | str, *, reader: str | None = None, apply: bool = False,
                exclude: Iterable[str] = (), backup: bool = True, key: str | None = None,
                chunk: int = CHUNK, options: dict | None = None) -> dict:
@@ -982,7 +999,7 @@ def run_import(source: str, db: Path | str, *, reader: str | None = None, apply:
                                f"(choose one with --from NAME)")
         detected = True
     if reader not in available:
-        raise ImportFailed(f"unknown reader {reader!r}; --readers lists them ({', '.join(sorted(available))})")
+        raise ImportFailed(f"unknown reader; --readers lists them ({', '.join(sorted(available))})")
     given = {k: v for k, v in (options or {}).items() if v not in (None, False)}
     unknown = sorted(set(given) - set(available[reader].options))
     if unknown:
@@ -992,7 +1009,7 @@ def run_import(source: str, db: Path | str, *, reader: str | None = None, apply:
         try:
             codecs.lookup(given["encoding"])
         except LookupError:
-            raise ImportFailed(f"unknown encoding {given['encoding']!r} for --encoding (examples: big5, gb18030, cp1252, shift_jis)") from None
+            raise ImportFailed("unknown encoding for --encoding (examples: big5, gb18030, cp1252, shift_jis)") from None
     view = open_view(db, key)
     try:
         try:
@@ -1012,7 +1029,9 @@ def run_import(source: str, db: Path | str, *, reader: str | None = None, apply:
         try:
             r = apply_import(db, reader, str(source), decisions, backup=backup, chunk=chunk, key=key)
         except Exception as exc:
-            out.update(ok=False, error=f"import stopped: {exc}", batch=getattr(exc, "batch_id", None))
+            error = str(exc) if isinstance(exc, ImportBackupFailed) else (
+                f"import stopped ({type(exc).__name__}); check permissions, free space and batch status")
+            out.update(ok=False, error=error, batch=getattr(exc, "batch_id", None))
             out["counts"], out["entries"] = count(decisions), [d.as_dict() for d in decisions]
             out["groups"] = assign_groups(read.entries, decisions, read.groups)
             if out["batch"]:
@@ -1046,7 +1065,7 @@ def run_revert(batch_id: str, db: Path | str, *, apply: bool = False, backup: bo
     view = open_view(db, key)
     try:
         if not view.exists or not view.batch_exists(batch_id):
-            raise ImportFailed(f"no import batch {batch_id!r} in {db}; `hermind import --list` shows the batches")
+            raise ImportFailed("no import batch matches; `hermind import --list` shows the batches")
         plan = plan_revert(view, batch_id)
     finally:
         view.close()

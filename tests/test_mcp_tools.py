@@ -128,7 +128,7 @@ def test_write_tools_roundtrip(mcp_spawn, tmp_path):
     rev, _ = c.call_json("memory_review")
     assert rev["count"] == 0
     bad, err = c.call_json("memory_update", id=99999, content="x")
-    assert not err and not bad["updated"]                                    # unknown id: nothing changes
+    assert err and "no note" in bad["error"]  # missing and inaccessible IDs have the same outcome
     gone, err = c.call_json("memory_forget", id=nid)
     assert not err and gone["deleted"]
     missing, err = c.call_json("memory_get", id=nid)
@@ -193,7 +193,8 @@ def test_cap_result_unit():
     assert capped["truncated"] and 0 < len(capped["results"]) < 100
 
 
-def test_optional_layers_are_off_by_default(pkg, tmp_path):
+def test_optional_layers_are_off_by_default(pkg, tmp_path, store_mod):
+    store_mod.DecisionStore(str(tmp_path / "d.db")).close()
     import hermind_mcp as hm
     srv = hm.HermindMCP(db=str(tmp_path / "d.db"))
     srv.open()

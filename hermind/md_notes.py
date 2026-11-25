@@ -192,8 +192,8 @@ def note_status(note: dict) -> str:
 def link_meta(conn, note: dict) -> dict:
     """status / supersedes / outdated_by of a note, from the note_links table (see render)."""
     nid = note["id"]
-    sup = sorted(r[0] for r in conn.execute("SELECT src FROM note_links WHERE dst=? AND rel='superseded_by'", (nid,)))
-    stale = conn.execute("SELECT dst FROM note_links WHERE src=? AND rel='stale_by'", (nid,)).fetchone()
+    sup = sorted(r[0] for r in conn.execute("SELECT src FROM note_links l JOIN notes a ON a.id=l.src JOIN notes b ON b.id=l.dst AND a.scope=b.scope WHERE dst=? AND rel='superseded_by'", (nid,)))
+    stale = conn.execute("SELECT dst FROM note_links l JOIN notes a ON a.id=l.src JOIN notes b ON b.id=l.dst AND a.scope=b.scope WHERE src=? AND rel='stale_by'", (nid,)).fetchone()
     outdated = stale[0] if stale else (note.get("canonical_id") if note["status"] == "superseded" else None)
     return {"status": note_status(note), "supersedes": sup, "outdated_by": outdated}
 
@@ -358,7 +358,7 @@ def decode_text(data: bytes, encoding: str | None = None) -> tuple[str | None, s
         except UnicodeDecodeError as exc2:
             return None, f"cannot be decoded as {encoding}: {exc2.reason} at byte {exc2.start}"
         except LookupError:
-            return None, f"unknown encoding {encoding!r}"
+            return None, "unknown encoding; choose a supported character encoding"
     if "\x00" in text:
         return None, ("contains NUL characters: it is binary data, or UTF-16 text without a byte-order mark; "
                       "save it as UTF-8 (or UTF-16 with a byte-order mark)")

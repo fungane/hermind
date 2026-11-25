@@ -14,6 +14,7 @@ import os
 import select
 import sqlite3
 import sys
+from pathlib import Path
 
 # onnxruntime's official builds send usage telemetry to Microsoft by default (1DS, Linux and macOS included) and keep a
 # device id for it. Hermind promises that nothing leaves the machine, so it is switched off before onnxruntime loads.
@@ -69,17 +70,29 @@ def embed(texts, prefix, bs=16):
     return np.vstack(out).astype(np.float32)
 
 
-def load_matrix():
-    con = dbdriver.connect(f"file:{a.db}?mode=ro", uri=True, timeout=5)
-    try:
-        key = con.execute("SELECT COUNT(*), COALESCE(MAX(rowid),0) FROM vectors WHERE model=?", (a.model_name,)).fetchone()
-        if key != cache["key"]:
-            rows = con.execute("SELECT note_id, vec FROM vectors WHERE model=?", (a.model_name,)).fetchall()
-            cache["ids"] = [r[0] for r in rows]
-            cache["mat"] = np.vstack([np.frombuffer(r[1], dtype=np.float32) for r in rows]) if rows else None
-            cache["key"] = key
-    finally:
-        con.close()
+matrix_connection = None
+
+
+def load_matrix(scopes):
+    global matrix_connection
+    if matrix_connection is None:
+        matrix_connection = dbdriver.connect(Path(a.db).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        matrix_connection.execute("PRAGMA query_only=ON")
+    con = matrix_connection
+    scope_key = None if scopes is None else tuple(scopes)
+    key = (con.execute("PRAGMA data_version").fetchone()[0], scope_key)
+    if key != cache["key"]:
+        sql = "SELECT v.note_id, v.vec FROM vectors v JOIN notes n ON n.id=v.note_id WHERE v.model=?"
+        params = [a.model_name]
+        if scopes is not None:
+            if not isinstance(scopes, list) or not 1 <= len(scopes) <= 2 or not all(isinstance(s, str) for s in scopes):
+                raise ValueError("invalid scope filter")
+            sql += f" AND n.scope IN ({','.join('?' * len(scopes))})"
+            params.extend(scopes)
+        rows = con.execute(sql, params).fetchall()
+        cache["ids"] = [r[0] for r in rows]
+        cache["mat"] = np.vstack([np.frombuffer(r[1], dtype=np.float32) for r in rows]) if rows else None
+        cache["key"] = key
 
 
 def handle(req):
@@ -90,12 +103,12 @@ def handle(req):
         m = embed([str(t) for t in req.get("texts", [])], req.get("prefix", "passage: "))
         return {"ok": True, "dim": int(m.shape[1]), "vecs": base64.b64encode(m.tobytes()).decode()}
     if op == "search":
-        load_matrix()
+        load_matrix(req.get("scopes"))
         if cache["mat"] is None:
             return {"ok": True, "hits": []}
         q = embed([str(req["query"])], req.get("prefix", "query: "))[0]
         sims = cache["mat"] @ q
-        k = min(int(req.get("k", 30)), len(sims))
+        k = min(max(1, int(req.get("k", 30))), len(sims))
         top = np.argpartition(-sims, k - 1)[:k]
         top = top[np.argsort(-sims[top])]
         return {"ok": True, "hits": [[cache["ids"][int(i)], round(float(sims[i]), 4)] for i in top]}

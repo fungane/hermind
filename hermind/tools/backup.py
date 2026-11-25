@@ -6,9 +6,12 @@ Exit code 1 if any database fails the integrity check (the bad copy is discarded
 """
 import argparse
 import os
-import sqlite3
+import re
 import sys
 import time
+import tempfile
+import contextlib
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -16,29 +19,32 @@ import dbdriver  # noqa: E402
 
 
 def backup_one(src: Path, dest: Path, keep: int) -> bool:
-    dest.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents=True, exist_ok=True, mode=0o700)
     tag = src.parent.name if src.parent.name != ".hermes" else "default"
-    out = dest / f"{tag}-{src.stem}-{time.strftime('%Y%m%d-%H%M')}.db"
-    enc = dbdriver.is_plaintext_file(src) is False              # encrypted source: the backup stays encrypted, same key
+    prefix = f"{tag}-{src.stem}-"
+    enc = dbdriver.is_plaintext_file(src) is False
     key = dbdriver.key_from_env() if enc else None
     if enc and not key:
-        raise dbdriver.EncryptionError(f"{src} is encrypted: set HERMIND_DB_KEY_FILE (or HERMIND_DB_KEY)")
-    a = dbdriver.connect(f"file:{src}?mode=ro", key, use_env=False, uri=True)
-    b = dbdriver.connect(str(out), key, use_env=False)
-    try:
-        a.backup(b)
-        ok = b.execute("PRAGMA integrity_check").fetchone()[0]
-    finally:
-        b.close()
-        a.close()
-    if ok != "ok":
-        out.unlink(missing_ok=True)
-        print(f"FAILED integrity_check for {src}: {ok}", file=sys.stderr)
-        return False
-    os.chmod(out, 0o600)
-    olds = sorted(dest.glob(f"{tag}-{src.stem}-*.db"))
+        raise dbdriver.EncryptionError("encrypted database; set HERMIND_DB_KEY_FILE or HERMIND_DB_KEY")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    out = dest / f"{prefix}{stamp}-{time.time_ns()}-{uuid.uuid4().hex[:8]}.db"
+    with tempfile.TemporaryDirectory(dir=dest) as work:
+        candidate = Path(work) / "backup.db"
+        with contextlib.closing(dbdriver.connect(src.resolve().as_uri() + "?mode=ro", key, use_env=False, uri=True)) as reader:
+            with contextlib.closing(dbdriver.connect(str(candidate), key, use_env=False)) as writer:
+                reader.backup(writer)
+                if writer.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    print("backup integrity check failed; previous copies retained", file=sys.stderr)
+                    return False
+                writer.execute("PRAGMA journal_mode=DELETE")
+        candidate.chmod(0o600)
+        os.link(candidate, out)
+    # Literal filename prefix. Brackets or other glob characters in a database
+    # name must never select a different database's backups for removal.
+    stamp_pattern = re.compile(re.escape(prefix) + r"[0-9]{8}-[0-9]{6}(?:-[0-9]+-[0-9a-f]{8})?\.db")
+    olds = sorted(p for p in dest.iterdir() if stamp_pattern.fullmatch(p.name) and p.is_file() and not p.is_symlink())
     for old in olds[:-keep]:
-        old.unlink()
+        old.unlink(missing_ok=True)
     print(f"ok {out} ({out.stat().st_size // 1024} KB), kept {min(len(olds), keep)}")
     return True
 

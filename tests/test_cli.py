@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -50,14 +51,11 @@ def _seed_db(path):
     s.close()
 
 
-def test_runtime_files_match_deploy_sh():
+def test_runtime_files_and_deploy_entry_point():
     sys.path.insert(0, str(ROOT))
     import hermind_cli
     text = (ROOT / "tools" / "deploy.sh").read_text()
-    listed = set(re.search(r"for f in (.*?); do", text).group(1).split())
-    in_sh = {f for f in listed if f != "store*.py"}
-    assert 'cp "$SRC"/../README.md "$D/"' in text                  # README.md sits at the top of the checkout
-    assert in_sh | {"README.md"} == set(hermind_cli.RUNTIME_FILES)
+    assert 'install-hermes --profile "$profile"' in text
     assert "store.py" in hermind_cli.runtime_files() and "store_schema.py" in hermind_cli.runtime_files()
     assert all(hermind_cli.runtime_source(f).exists() for f in hermind_cli.runtime_files())
     assert hermind_cli.runtime_source("README.md") == REPO / "README.md"
@@ -218,11 +216,13 @@ def test_config_toml_yaml_and_shell(home):
     d = json.loads(run("config", "continue", "--json", home=home, check=0).stdout)
     assert "mcpServers:" in d["snippet"] and "hermind-mcp" in d["snippet"]
     d = json.loads(run("config", "dsh", "--json", "--source", "checkout", home=home, check=0).stdout)
-    assert _in_json(str(ROOT / "hermind_mcp.py")) in d["snippet"] and "checkout" in d["note"]
+    args = next(line.split(":", 1)[1] for line in d["snippet"].splitlines() if line.strip().startswith("args:"))
+    assert json.loads(args) == [str(ROOT / "hermind_mcp.py")] and "checkout" in d["note"]
 
 
-def test_config_checkout_source_runs_the_server(home, tmp_path):
+def test_config_checkout_source_runs_the_server(home, tmp_path, store_mod):
     """The command the snippet gives for --source checkout really starts a working server."""
+    store_mod.DecisionStore(str(tmp_path / "x.db")).close()
     d = json.loads(run("config", "cursor", "--json", "--source", "checkout", "--db", str(tmp_path / "x.db"), home=home, check=0).stdout)
     srv = json.loads(d["snippet"])["mcpServers"]["hermind"]
     env = {**os.environ, **srv["env"]}
@@ -381,7 +381,8 @@ def test_authorize_key_line_and_errors(home, tmp_path):
     r, d = _keyline(home, "--pubkey", str(pub))
     assert r.returncode == 0 and d["write"] is False
     line = d["authorized_keys_line"]
-    assert line.startswith('restrict,command="python3 ') and "hermind_mcp.py --db " in line and "--write" not in line
+    assert line.startswith('restrict,command="python3 ')
+    assert shlex.split(line.split('"', 2)[1]) == ["python3", str(ROOT / "hermind_mcp.py"), "--db", d["database"]["path"]]
     assert line.endswith("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc test@mac")
     assert "--write" in _keyline(home, "--pubkey", str(pub), "--write")[1]["authorized_keys_line"]
     assert _keyline(home, "--pubkey", str(tmp_path / "nope"))[0].returncode == 2
@@ -799,3 +800,57 @@ def test_hook_command_on_windows_runs_in_cmd_exe_and_in_bash(monkeypatch):
     import shlex                                                                          # POSIX: the line it always was
     assert hermind_cli.hook_command(SimpleNamespace(source="checkout"), "/tmp/m y.db", windows=False) == " ".join(
         shlex.quote(x) for x in [sys.executable, str(hermind_cli.ROOT / "hermind_hook.py"), "--db", "/tmp/m y.db"])
+
+
+def test_failed_install_keeps_original_files(home, monkeypatch):
+    import hermind_cli as cli
+    from argparse import Namespace
+
+    base = home / ".hermes"
+    plugin = base / "plugins" / "hermind"
+    plugin.mkdir(parents=True)
+    (plugin / "marker").write_text("old")
+    _seed_db(base / "hermind.db")
+
+    def fail_verify(*args):
+        raise RuntimeError("simulated verification failure")
+
+    monkeypatch.setattr(cli, "_verify_install_db", fail_verify)
+    result = cli.install_hermes(Namespace(hermes_home=str(base), profile=None, dry_run=False))
+    assert not result["ok"]
+    assert [p.name for p in plugin.iterdir()] == ["marker"]
+    assert not list(base.glob(".hermind-stage-*"))
+
+
+def test_activation_failure_restores_original_dir(tmp_path):
+    import hermind_cli as cli
+
+    plugin = tmp_path / "hermind"
+    plugin.mkdir()
+    (plugin / "marker").write_text("original")
+    with pytest.raises(OSError):
+        cli._activate_plugin(tmp_path / "absent-stage", plugin, tmp_path / "previous")
+    assert (plugin / "marker").read_text() == "original"
+
+
+def test_install_verifies_committed_wal_and_keeps_user_files(home):
+    import sqlite3
+
+    base = home / ".hermes"
+    db = base / "hermind.db"
+    _seed_db(db)
+    writer = sqlite3.connect(db)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("UPDATE notes SET status='superseded' WHERE status='active'")
+        writer.commit()
+        plugin = base / "plugins" / "hermind"
+        plugin.mkdir(parents=True)
+        (plugin / "local.txt").write_text("local settings")
+        result = json.loads(run("install-hermes", "--json", home=home, check=0).stdout)
+        assert result["verify"]["active_notes"] == 0
+        assert Path(result["db_backup"]).is_file()
+        assert (plugin / "local.txt").read_text() == "local settings"
+    finally:
+        writer.close()

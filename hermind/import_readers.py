@@ -80,7 +80,11 @@ def read_markdown(source: Path, view, encoding: str | None = None, ignore_file_n
     for path in files:
         origin = path.relative_to(root).as_posix()
         try:
-            data = path.read_bytes()
+            with path.open("rb") as fh:
+                data = fh.read(64 * 1024**2 + 1)
+            if len(data) > 64 * 1024**2:
+                res.entries.append(Entry(text="", origin=origin, unreadable="file exceeds 64 MiB; split the input"))
+                continue
         except OSError as exc:
             res.entries.append(Entry(text="", origin=origin, unreadable=f"cannot read the file ({exc.strerror or exc})"))
             continue
@@ -166,7 +170,12 @@ def read_hermes_builtin(source: Path, view) -> ReadResult:
     for path in files:
         target, kind = HERMES_FILES[path.name.upper()]
         try:
-            text = path.read_text(encoding="utf-8")
+            with path.open("rb") as source_file:
+                data = source_file.read(64 * 1024**2 + 1)
+            if len(data) > 64 * 1024**2:
+                res.entries.append(Entry(text="", origin=path.name, unreadable="file exceeds 64 MiB; split the input"))
+                continue
+            text = data.decode("utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             res.remarks.append(f"{path.name}: not read ({type(exc).__name__}); it is not a UTF-8 text file")
             continue
@@ -280,7 +289,10 @@ def _read_text(path: Path, encoding: str | None, origin: str | None = None) -> t
     """(text, None) or (None, an ``unreadable`` entry) for a text file."""
     origin = origin or path.name
     try:
-        data = path.read_bytes()
+        with path.open("rb") as fh:
+            data = fh.read(64 * 1024**2 + 1)
+        if len(data) > 64 * 1024**2:
+            return None, Entry(text="", origin=origin, unreadable="file exceeds 64 MiB; split the input")
     except OSError as exc:
         return None, Entry(text="", origin=origin, unreadable=f"cannot read the file ({exc.strerror or exc})")
     text, why = md_notes.decode_text(data, encoding)

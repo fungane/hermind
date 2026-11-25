@@ -49,7 +49,7 @@ try:
     from .project import project_for
     from .store import KINDS, LEARN_WINDOW_SECONDS, PENDING_WEIGHT, DecisionStore, RefusedWrite, day_bounds, l0
     from .store_common import default_db_file, explicit_never_expires
-    from .store_writes import clean_entities, screen_fields
+    from .store_writes import check_text, clean_entities, screen_fields
     from .textnorm import classify_kind, topical_weight
 except ImportError:  # loaded as a top-level module (e.g. pytest collecting the plugin dir)
     from screen import (CONTEXT_TAG, clean_prompt, has_text_outside_private, looks_masked_secret, looks_secret, strip_injected,
@@ -58,7 +58,7 @@ except ImportError:  # loaded as a top-level module (e.g. pytest collecting the 
     from project import project_for
     from store import KINDS, LEARN_WINDOW_SECONDS, PENDING_WEIGHT, DecisionStore, RefusedWrite, day_bounds, l0
     from store_common import default_db_file, explicit_never_expires
-    from store_writes import clean_entities, screen_fields
+    from store_writes import check_text, clean_entities, screen_fields
     from textnorm import classify_kind, topical_weight
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,10 @@ def _dict_list(messages) -> list:
     return [m for m in messages if isinstance(m, dict)] if isinstance(messages, (list, tuple)) else []
 
 
+class ArgumentError(ValueError):
+    """A field-specific message safe to return to the client."""
+
+
 def _int_arg(value, name: str) -> int:
     """A whole-number tool argument as an int that SQLite can hold; ValueError (a tool error, never a traceback) otherwise."""
     try:
@@ -84,9 +88,9 @@ def _int_arg(value, name: str) -> int:
             raise ValueError
         n = int(value)
     except (TypeError, ValueError, OverflowError):
-        raise ValueError(f"{name} must be a whole number") from None
+        raise ArgumentError(f"{name} must be a whole number") from None
     if not -_SQLITE_INT <= n < _SQLITE_INT:
-        raise ValueError(f"{name} is out of range: use a whole number between {-_SQLITE_INT} and {_SQLITE_INT - 1}")
+        raise ArgumentError(f"{name} is out of range: use a whole number between {-_SQLITE_INT} and {_SQLITE_INT - 1}")
     return n
 
 _DEFAULT_DB_PATH = "$HERMES_HOME/hermind.db"   # an existing decision_memory.db is picked up instead, see _db_path
@@ -506,7 +510,9 @@ class HermindProvider(MemoryProvider):
             from .vec import VectorIndex
         except ImportError:
             from vec import VectorIndex
-        return VectorIndex(cfg, db_path)
+        index = VectorIndex(cfg, db_path)
+        index.scopes = self._store._scopes(None) if self._store else None
+        return index
 
     def _vector_fuse(self, queries: list, notes: list, limit: int, filters: dict, *, index: bool = True,
                      timeout: float | None = None, project: str | None = None,
@@ -518,7 +524,7 @@ class HermindProvider(MemoryProvider):
         there is judged on the combined multiplier search() already applied to that note (passed as *combined*, the
         private "project_mult" of its shared cache); vector-only hits get the same product computed by the store."""
         try:
-            if index:
+            if index and self._writable:
                 self._vec.index_missing(self._store, 32)
             lists = [[n["id"] for n in notes]]
             by = {n["id"]: n for n in notes}
@@ -611,17 +617,19 @@ class HermindProvider(MemoryProvider):
                                     synonyms_path=self._config.get("synonyms_path") or None,
                                     weights=weights,
                                     boost=_parse_boost(self._config.get("search_boost")),
-                                    scope=self._scope(str(hermes_home), kwargs), track_access=True,
+                                    scope=self._scope(str(hermes_home), kwargs), track_access=self._writable, readonly=not self._writable,
                                     project_penalty=self._config.get("project_penalty"),
                                     project_penalty_kinds=self._config.get("project_penalty_kinds"))
         self._llm = self._make_llm()
-        self._vec = self._make_vec(self._db_path(str(hermes_home)))
+        self._vec = self._make_vec(str(self._store.snapshot.path) if self._store.snapshot else self._db_path(str(hermes_home)))
         self._project = self._resolve_project(kwargs.get("cwd"))
+        if not self._writable:
+            return
         try:
-            self._store.maintenance(consolidate=_truthy(self._config.get("consolidate_on_init", True))
+            self._store.maintenance(scope=self._store.scope, consolidate=_truthy(self._config.get("consolidate_on_init", True))
                                     and self._writable)
         except Exception as exc:  # pragma: no cover
-            logger.debug("hermind maintenance failed: %s", exc)
+            logger.debug("hermind maintenance failed: %s", type(exc).__name__)
 
     def _resolve_project(self, cwd) -> str | None:
         """The project for this provider's lifetime (on_session_switch carries no cwd and keeps it). Never raises: any
@@ -657,7 +665,7 @@ class HermindProvider(MemoryProvider):
             with self._lock:
                 body = self._store.core_summary(chars) if chars else ""
         except Exception as exc:   # the system prompt must never fail because of this block
-            logger.debug("hermind core summary failed: %s", exc)
+            logger.debug("hermind core summary failed: %s", type(exc).__name__)
             return ""
         return f"{self._CONTEXT_OPEN}\n{body}\n{self._CONTEXT_CLOSE}" if body else ""
 
@@ -679,7 +687,7 @@ class HermindProvider(MemoryProvider):
     # -- recall -------------------------------------------------------------------------------------------------
 
     def maintenance(self) -> int:
-        return self._store.maintenance() if self._store else 0
+        return self._store.maintenance(scope=self._store.scope) if self._store else 0
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         try:
@@ -688,7 +696,7 @@ class HermindProvider(MemoryProvider):
             name = type(exc).__name__
             if name not in self._prefetch_warned:       # once per kind of failure, with the traceback; then quiet
                 self._prefetch_warned.add(name)
-                logger.warning("hermind prefetch failed (%s); further failures of this kind are logged at debug level", name, exc_info=True)
+                logger.warning("hermind prefetch failed (%s); further failures of this kind are logged at debug level", name)
             else:
                 logger.debug("hermind prefetch failed: %s", name)
             self._last_count = 0
@@ -696,7 +704,7 @@ class HermindProvider(MemoryProvider):
 
     def _prefetch(self, query: str) -> str:
         self._last_count = 0
-        query = strip_private(clean_prompt(query))[0].replace("[REDACTED]", " ")   # notices, markers, <private> spans: not searched
+        query = clean_prompt(strip_private(query)[0].replace("[REDACTED]", " "))   # notices, markers, <private> spans: not searched
         query = " ".join(query.split())
         if self._store is None or not query:
             return ""
@@ -830,7 +838,7 @@ class HermindProvider(MemoryProvider):
                 continue
             kind = f["kind"] if f["kind"] in KINDS and f["kind"] not in ("summary", "news") else "chat"
             try:
-                if self._merge_into_twin(f["text"], " ".join(f["aliases"])):
+                if review == "active" and self._merge_into_twin(f["text"], " ".join(f["aliases"])):
                     continue
                 with self._lock:
                     if self._store is not None:
@@ -856,8 +864,8 @@ class HermindProvider(MemoryProvider):
             if not sim:
                 return False
             twin = max(sim, key=lambda x: x["similarity"])
-            row = self._store.conn.execute("SELECT content, keywords, pinned, locked FROM notes WHERE id=?",
-                                           (twin["id"],)).fetchone()
+            row = self._store.conn.execute("SELECT content, keywords, pinned, locked FROM notes WHERE id=? AND scope=?",
+                                           (twin["id"], self._store.scope)).fetchone()
             if row is None or row["pinned"] or row["locked"]:
                 return False
             merged_kw = " ".join(dict.fromkeys((row["keywords"] + " " + aliases).split()))
@@ -881,7 +889,7 @@ class HermindProvider(MemoryProvider):
                 return
             self._capture(_as_text(user_content), _as_text(assistant_content), session_id)
         except Exception as exc:
-            logger.debug("hermind sync_turn failed: %s", exc)
+            logger.debug("hermind sync_turn failed: %s", type(exc).__name__)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Capture the final user/assistant exchange if sync_turn has not already (dedup makes this idempotent)."""
@@ -903,7 +911,7 @@ class HermindProvider(MemoryProvider):
         try:
             self._capture(user, assistant)
         except Exception as exc:
-            logger.debug("hermind on_session_end failed: %s", exc)
+            logger.debug("hermind on_session_end failed: %s", type(exc).__name__)
 
     # -- compression / built-in memory mirror -------------------------------------------------------------------
 
@@ -911,7 +919,7 @@ class HermindProvider(MemoryProvider):
         try:
             return self._pre_compress(messages)
         except Exception as exc:          # compression must never fail because of this hook
-            logger.debug("hermind on_pre_compress failed: %s", exc)
+            logger.debug("hermind on_pre_compress failed: %s", type(exc).__name__)
             return ""
 
     def _pre_compress(self, messages: List[Dict[str, Any]]) -> str:
@@ -975,7 +983,7 @@ class HermindProvider(MemoryProvider):
                     return
                 self._store.add(content, kind=kind, source_session=src, pinned=True, project=self._project)
         except Exception as exc:
-            logger.debug("hermind on_memory_write failed: %s", exc)
+            logger.debug("hermind on_memory_write failed: %s", type(exc).__name__)
 
     # -- tools --------------------------------------------------------------------------------------------------
 
@@ -990,7 +998,7 @@ class HermindProvider(MemoryProvider):
                     "memory_feedback": self._feedback, "memory_get": self._get,
                     "memory_review": self._review}
         if not isinstance(tool_name, str) or tool_name not in handlers:
-            return tool_error(f"Unknown tool: {_as_text(tool_name)[:60] or type(tool_name).__name__}")
+            return tool_error("Unknown tool; select a name from the tool list")
         if args and not isinstance(args, dict):
             return tool_error(f"{tool_name}: arguments must be an object (name: value pairs), not {type(args).__name__}")
         args = args or {}
@@ -1002,13 +1010,30 @@ class HermindProvider(MemoryProvider):
             return tool_error("hermind is read-only in this context (subagent/cron/flush)")
         try:
             with self._lock:
+                editing = (tool_name in ("memory_update", "memory_feedback", "memory_forget") or
+                           (tool_name == "memory_review" and args.get("action", "list") != "list"))
+                if editing or tool_name == "memory_get":
+                    ids = args.get("ids") if tool_name == "memory_review" else None
+                    if ids is None:
+                        ids = [args["id"]] if "id" in args else []
+                    if not isinstance(ids, (list, tuple)):
+                        ids = [ids]
+                    note_ids = [_int_arg(value, "id") for value in ids]
+                    for nid in note_ids:
+                        row = self._store.get(nid)
+                        scopes = self._store._scopes(None)
+                        if row is None or (editing and row["scope"] != self._store.scope) or (
+                                scopes is not None and row["scope"] not in scopes):
+                            return tool_error(f"no note #{nid}. Do not guess ids; find it with memory_search first.")
                 return handlers[tool_name](args or {})
+        except ArgumentError as exc:
+            return tool_error(str(exc))
         except RefusedWrite as exc:
             return json.dumps({"error": str(exc), "refused": True})
         except (KeyError, ValueError, TypeError) as exc:
-            return tool_error(str(exc))
+            return tool_error(f"{tool_name}: invalid argument ({type(exc).__name__}); check field types, ids and dates (YYYY-MM-DD)")
         except Exception as exc:   # e.g. an argument of the wrong type reaching SQL or a string method: never raise into the agent loop
-            logger.warning("hermind %s failed: %s", tool_name, type(exc).__name__, exc_info=True)
+            logger.warning("hermind %s failed: %s", tool_name, type(exc).__name__)
             if isinstance(exc, (TypeError, ValueError, KeyError, OverflowError)):
                 return tool_error(f"{tool_name} failed ({type(exc).__name__}); check the argument types")
             return tool_error(f"{tool_name} failed ({type(exc).__name__}): not a problem with the arguments; see the log, "
@@ -1031,6 +1056,7 @@ class HermindProvider(MemoryProvider):
             screen_fields(entities=ents.replace("，", ",").split(","))
             ents = strip_private_label(ents).replace("，", ",").split(",")
         ents = [str(e).strip() for e in ents if str(e).strip()]
+        content, keywords = check_text(content, keywords, tags=a.get("tags") or "", entities=ents)
         if not ents and self._llm is not None:
             ents = clean_entities(self._llm.extract_entities(content) or [])   # the model's output never refuses the note
         check = self._store.write_check(content, ents)
@@ -1046,7 +1072,7 @@ class HermindProvider(MemoryProvider):
                                        review="pending" if hold else "active",
                                        valid_from=a.get("valid_from") or None, valid_to=a.get("valid_to") or None,
                                        project=self._project)
-        if not created and keywords.strip():
+        if not created and keywords.strip() and not self._config.get("remember_review"):
             existing = self._store.get(nid)
             merged = " ".join(dict.fromkeys((existing["keywords"] + " " + keywords).split()))
             self._store.update_keywords(nid, merged)
@@ -1067,11 +1093,11 @@ class HermindProvider(MemoryProvider):
         return json.dumps(res, ensure_ascii=False)
 
     def _search(self, a: dict) -> str:
-        query = str(a.get("query") or "").strip()
+        query = strip_private_label(str(a.get("query") or "")).strip()
         extra = a.get("queries") or []
         if isinstance(extra, str):
             extra = [extra]
-        extra = [str(q).strip() for q in extra if isinstance(q, (str, int, float)) and str(q).strip()]
+        extra = [strip_private_label(str(q)).strip() for q in extra if isinstance(q, (str, int, float)) and str(q).strip()]
         if not query and extra:
             query, extra = extra[0], extra[1:]
         if not query:
@@ -1131,7 +1157,7 @@ class HermindProvider(MemoryProvider):
             return
         sid = self._session_id or "-"
         seen = self._shown.pop(sid, None) or OrderedDict()
-        fresh = [i for i in dict.fromkeys(ids) if i not in seen]
+        fresh = self._store._owned_ids(i for i in dict.fromkeys(ids) if i not in seen)
         for i in fresh:
             seen[i] = False
         while len(seen) > 300:
@@ -1154,7 +1180,7 @@ class HermindProvider(MemoryProvider):
 
     def _log_listing(self, kind: str, ids: list, **kw) -> None:
         """usage_log row for a search / automatic recall plus the ids it listed; remembered per session so that a later
-        memory_get / feedback of one of those notes can point back to it (no text is stored beyond the existing 200-char query)."""
+        memory_get / feedback of one of those notes can point back to it (only counts and result ids are stored)."""
         eid = self._store.log_event(kind, shown=ids, **kw)
         if eid is None or not ids:
             return
@@ -1174,7 +1200,9 @@ class HermindProvider(MemoryProvider):
         return None
 
     def _remember_search(self, queries: list, notes: list) -> None:
-        if not queries or not queries[0]:
+        if not _truthy(self._config.get("learn_query_terms", False)) or not self._writable or not queries or not queries[0]:
+            return
+        if looks_secret(queries[0]) or _find_pii(queries[0]):
             return
         sid = self._session_id or "-"
         ring = self._recent.pop(sid, None) or deque(maxlen=5)
@@ -1193,7 +1221,7 @@ class HermindProvider(MemoryProvider):
         """memory_get(id) / helpful feedback shortly after a search that did not rank the note first: the search's
         query terms become pending learned terms of the note (indexed after a 2nd independent confirmation).
         Unhelpful feedback removes the terms learned from the recent searches."""
-        if not self._writable:
+        if not self._writable or (self._store.get(nid) or {}).get("scope") != self._store.scope:
             return
         recent = self._recent_searches()
         if not recent:
@@ -1209,7 +1237,7 @@ class HermindProvider(MemoryProvider):
             source = f"{self._session_id or '-'}|{time.strftime('%Y-%m-%d', time.localtime(self._clock()))}"
             self._store.learn(nid, query, source, now=self._clock())
         except Exception as exc:  # never let learning break a tool call
-            logger.debug("hermind learning failed: %s", exc)
+            logger.debug("hermind learning failed: %s", type(exc).__name__)
 
     def _get(self, a: dict) -> str:
         nid = _int_arg(a["id"], "id")
@@ -1228,7 +1256,7 @@ class HermindProvider(MemoryProvider):
         return json.dumps(out, ensure_ascii=False)
 
     def _reflect(self, a: dict) -> str:
-        query = str(a.get("query") or "").strip()
+        query = strip_private_label(str(a.get("query") or "")).strip()
         if not query:
             return tool_error("query is required")
         limit = max(1, min(int(a.get("limit") or 12), 25))
@@ -1240,7 +1268,7 @@ class HermindProvider(MemoryProvider):
         return json.dumps(pack, ensure_ascii=False)
 
     def _related(self, a: dict) -> str:
-        entity = str(a.get("entity") or "").strip()
+        entity = strip_private_label(str(a.get("entity") or "")).strip()
         if not entity:
             return tool_error("entity is required")
         as_of = a.get("as_of") or None
@@ -1283,10 +1311,10 @@ class HermindProvider(MemoryProvider):
         hold = self._hold_reason(content, kw or "", False) if before else ""
         if before and not hold and before.get("pinned") and self._config.get("remember_review") == "auto":
             hold = "it changes a pinned note"
-        updated = self._store.update(nid, content, kw)
+        updated = self._store.update(nid, content, kw, hold=bool(hold),
+                                     hold_pinned=self._config.get("remember_review") == "auto")
         res = {"id": nid, "updated": updated}
         if updated and hold:           # the old text stays in the note's history; the new text waits for the maintainer
-            self._store.mark_pending(nid)
             res["review"] = "held for the maintainer to confirm" + (f" ({hold})" if hold != "all" else "")
         return json.dumps(res)
 

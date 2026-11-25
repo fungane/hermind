@@ -31,7 +31,11 @@ def _hermind_mcp():
 
 def recall(prompt: str, argv: list[str]) -> str:
     """The context block for a prompt, or ''."""
-    prompt = (prompt or "").strip()[:MAX_PROMPT_CHARS]
+    try:
+        from .screen import strip_private_label
+    except ImportError:
+        from screen import strip_private_label
+    prompt = strip_private_label(prompt or "").strip()[:MAX_PROMPT_CHARS]
     if not prompt or prompt.startswith("/"):          # empty, or a slash command rather than a question
         return ""
     mcp = _hermind_mcp()
@@ -56,7 +60,9 @@ def main(argv=None) -> int:
     if os.environ.get("HERMIND_HOOK", "").strip().lower() in ("0", "off", "false", "no"):
         return 0
     try:
-        raw = sys.stdin.buffer.read().decode("utf-8-sig", "replace") if hasattr(sys.stdin, "buffer") else sys.stdin.read()
+        raw = sys.stdin.buffer.read(1048577).decode("utf-8-sig", "replace") if hasattr(sys.stdin, "buffer") else sys.stdin.read(1048577)
+        if len(raw) > 1048576:
+            return 0
         data = json.loads(raw) if raw.strip() else {}
         if not isinstance(data, dict) or data.get("hook_event_name", "UserPromptSubmit") != "UserPromptSubmit":
             return 0
@@ -65,7 +71,7 @@ def main(argv=None) -> int:
         return 0
     except Exception as exc:                              # a hook must never get in the way of the prompt
         if os.environ.get("HERMIND_HOOK_DEBUG"):
-            print(f"hermind-hook: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
+            print(f"hermind-hook: {type(exc).__name__}", file=sys.stderr)
         return 0
     if block:
         out = json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": block}},
@@ -79,7 +85,7 @@ def main(argv=None) -> int:
                 sys.stdout.write(out)
         except Exception as exc:                          # a closed pipe or a broken console must not fail the prompt either
             if os.environ.get("HERMIND_HOOK_DEBUG"):
-                print(f"hermind-hook: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
+                print(f"hermind-hook: {type(exc).__name__}", file=sys.stderr)
     return 0
 
 

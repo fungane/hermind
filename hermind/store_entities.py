@@ -67,10 +67,38 @@ class EntityMixin:
                 c["alias"][k] = eid
                 c["max_words"] = max(c["max_words"], len(k.split()))
 
-    def detect_entities(self, text: str, aliases: bool = True) -> dict[int, float]:
+    def _visible_dictionary(self, scopes):
+        # Include only labels evidenced by a note in the requested scopes. Old
+        # dictionary aliases have no owner and remain available to all-scope readers.
+        stamp = (tuple(scopes), self.conn.total_changes, self.conn.execute("PRAGMA data_version").fetchone()[0])
+        hit = getattr(self, "_visible_entity_cache", None)
+        if hit and hit[0] == stamp:
+            return hit[1]
+        rows = self.conn.execute(
+            "SELECT DISTINCT e.id,e.key,e.name FROM entities e JOIN note_entities ne ON e.id=ne.entity_id "
+            "JOIN notes n ON n.id=ne.note_id WHERE n.status IN ('active','superseded','merged')" + self._scope_filter(scopes), scopes)
+        latin, cjk, alias = {}, {}, {}
+        for eid, key, name in rows:
+            (cjk if RE_CJK_CHAR.search(key) else latin)[key] = eid
+            for label in self.synonyms.group_of(name):
+                alias.setdefault(_entity_key(label), eid)
+        for eid, label in self.conn.execute(
+                "SELECT a.entity_id,a.alias FROM note_aliases a JOIN notes n ON n.id=a.note_id "
+                "WHERE n.status IN ('active','superseded','merged')" + self._scope_filter(scopes) + " ORDER BY a.rowid", scopes):
+            alias.setdefault(_entity_key(label), eid)
+        cache = {"latin": latin, "cjk": cjk, "alias": alias,
+                 "max_words": max((len(k.split()) for k in (*latin, *alias)), default=1)}
+        self._visible_entity_cache = stamp, cache
+        return cache
+
+    def _record_aliases(self, nid, eid, labels):
+        self.conn.executemany("INSERT OR IGNORE INTO note_aliases(note_id,entity_id,alias) VALUES (?,?,?)",
+                              ((nid, eid, label) for raw in labels if (label := strip_private_label(raw).strip())))
+
+    def detect_entities(self, text: str, aliases: bool = True, scopes=None) -> dict[int, float]:
         """Known entities mentioned in *text* (dictionary lookup over Latin word n-grams and CJK substrings, plus
         aliases). Returns entity id -> match weight (1.0 direct, 0.7 via alias)."""
-        cache = self._entities()
+        cache = self._visible_dictionary(scopes) if scopes else self._entities()
         t = normalize(text)
         found: dict[int, float] = {}
         toks = _RE_LATIN_TOK.findall(t)
@@ -107,14 +135,21 @@ class EntityMixin:
             name, _, al = (str(raw), "", "") if exact else strip_private_label(str(raw)).partition("=")
             key = _entity_key(name)
             if key if exact else _valid_entity(key):          # exact: the source's own names, whatever kind of name they are
-                ents[self._get_or_create_entity(key, name.strip(), [a.strip() for a in al.split("|")], seed=not exact)] = None
+                labels = [a.strip() for a in al.split("|") if a.strip()]
+                eid = self._get_or_create_entity(key, name.strip(), labels, seed=not exact)
+                ents[eid] = None
+                if len(ents) <= 16 and labels:
+                    self._record_aliases(nid, eid, labels)
         for key, name in ({} if exact else extract_entities(content)).items():
             # synonym-table aliases only for name-like pattern entities (VPS, llama.cpp), not Title-case words
             seed = bool(RE_CJK_CHAR.search(name) or name.isupper() or re.search(r"[\d._\-+]", name))
             ents[self._get_or_create_entity(key, name, seed=seed)] = None
         if use_dictionary and not exact:
             for eid in self.detect_entities(content, aliases=False):
-                ents[eid] = None
+                if eid not in ents and self.conn.execute(
+                        "SELECT 1 FROM note_entities ne JOIN notes n ON n.id=ne.note_id WHERE ne.entity_id=? "
+                        "AND n.scope=(SELECT scope FROM notes WHERE id=?) LIMIT 1", (eid, nid)).fetchone():
+                    ents[eid] = None
         ids = list(ents)[:16]
         if not ids:
             return
@@ -157,5 +192,9 @@ class EntityMixin:
         with self._lock, self.conn:
             key = _entity_key(name)
             if not _valid_entity(key):
-                raise ValueError(f"not a valid entity name: {name!r}")
-            return self._get_or_create_entity(key, name, list(aliases))
+                raise ValueError("invalid entity name; use a short public label")
+            eid = self._get_or_create_entity(key, name, aliases)
+            for (nid,) in self.conn.execute("SELECT ne.note_id FROM note_entities ne JOIN notes n ON n.id=ne.note_id "
+                                            "WHERE ne.entity_id=? AND n.scope=?", (eid, self.scope)):
+                self._record_aliases(nid, eid, aliases)
+            return eid

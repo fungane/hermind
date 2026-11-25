@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermind"
-version = "1.1.1"
+version = "1.1.2"
 description = "Hermind long-term memory (one SQLite file) as an MCP server for any MCP-capable agent; also a Hermes memory plugin."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -46,7 +46,7 @@ packages = ["hermind"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-hermind = ["synonyms.yaml"]
+hermind = ["synonyms.yaml", "plugin.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

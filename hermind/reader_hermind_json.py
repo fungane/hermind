@@ -74,7 +74,7 @@ def _tags(v) -> list[str]:
     return [str(t) for t in v if str(t).strip()] if isinstance(v, list) else []
 
 
-def _entities(v) -> tuple | None:
+def _entities(v, field="aliases") -> tuple | None:
     """The entities the record gives the note, exactly; None when the record has no usable list (the first export)."""
     if not isinstance(v, list):
         return None
@@ -84,7 +84,7 @@ def _entities(v) -> tuple | None:
             name = strip_private_label(e["name"])
             if not name.strip():
                 continue
-            als = e.get("aliases")
+            als = e.get(field)
             out.append((name, tuple(a for a in als if isinstance(a, str) and a) if isinstance(als, list) else ()))
     return tuple(out)
 
@@ -177,7 +177,11 @@ def _target(rec: dict, links: tuple, private_rel: bool) -> tuple[int | None, str
 
 def read_hermind_json(source: Path, view) -> ReadResult:
     try:
-        data = json.loads(source.read_text(encoding="utf-8-sig"))
+        with source.open("rb") as fh:
+            raw = fh.read(64 * 1024**2 + 1)
+        if len(raw) > 64 * 1024**2:
+            raise ValueError("JSON exceeds 64 MiB; split the export")
+        data = json.loads(raw.decode("utf-8-sig"))
     except UnicodeDecodeError as exc:
         raise ImportFailed(f"{source.name} is not a UTF-8 text file ({exc.reason}); expected the output of `hermind export`") from None
     except ValueError as exc:
@@ -221,6 +225,7 @@ def read_hermind_json(source: Path, view) -> ReadResult:
                       valid_from=_date(rec.get("valid_from")), valid_to=_date(rec.get("valid_to")),
                       pending=rec.get("review") == "pending", trust=trust, scope=scope, private_scope=private_scope,
                       source_id=nid_for_links, after=_after(rec), entities=_entities(rec.get("entities")),
+                      note_aliases=_entities(rec.get("entities"), "note_aliases"),
                       links=links, metadata_notes=tuple(notes))
         if status == "active":
             counts["live"] += 1

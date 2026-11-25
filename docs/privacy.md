@@ -46,7 +46,7 @@ What you should do:
 | `hermind import-projects` | Gives older notes the project (working directory) of their session from a JSON file you make. Only notes with no project are set; a real run saves a backup copy first and `--dry-run` writes nothing. The summary prints counts, never paths |
 | Notes are data | Text returned to an agent is wrapped with a reminder that notes are not instructions, and instruction-like lines in stored text are defanged. This reduces prompt-injection risk; it cannot remove it |
 | Read-only MCP | Write tools are not advertised unless you pass `--write`, and a call to one fails as an unknown tool |
-| Recall log | `recall_shown` holds note ids and ranks only. The question text it points to is the 200-character query kept in `usage_log` for 90 days (`<private>` text stripped). Nothing leaves the machine |
+| Recall log | The usage log records counts and the IDs and ranks of listed notes. It omits query text. The next logged event prunes statistics older than 90 days. |
 
 These controls are pattern-based, and a `<private>` tag only protects what you wrap. A memory agent that is told something
 false can write it down: the review step holds the few notes that look like an attack so that a person, not the agent,
@@ -77,7 +77,7 @@ SQLCipher (AES-256). Without one nothing changes and nothing extra is installed.
 
 ```bash
 pip install ".[encrypted]"     # in a checkout: the sqlcipher3 driver (wheels for Linux x86_64 / aarch64, macOS, Windows)
-# for uvx, start the server with --from "hermind[encrypted] @ git+https://github.com/fungane/hermind@v1.1.1"
+# for uvx, start the server with --from "hermind[encrypted] @ git+https://github.com/fungane/hermind@v1.1.2"
 python3 hermind/tools/encrypt_db.py --generate-key-file ~/.hermind/db.key   # random key, mode 600, never overwrites
 export HERMIND_DB_KEY_FILE=~/.hermind/db.key
 # stop Hermes, hermind-mcp and the vector worker, then:
@@ -106,3 +106,9 @@ What it does and does not do:
 - The vector worker has its own Python environment: install `sqlcipher3` there too (`<its venv>/bin/pip install sqlcipher3`),
   or semantic search stays off; the worker's error is written to `<db>.vec.log`.
 - Not tested: Android / Termux (no prebuilt wheel there; it would have to be built from source).
+
+## Historical search data
+
+Run `hermind privacy-cleanup --db FILE` locally to count historical query strings, pending learned terms and notes with learned vocabulary. The preview shows counts only. After taking a backup, `--apply` clears those fields and the learned postings in a transaction. Other copies, backup files and free database pages can still hold historical bytes. The command leaves note text, manual keywords and entity names intact.
+
+Remote model URLs require HTTPS. HTTP is supported for localhost and literal loopback addresses. Redirects are refused. The configured key is used only on the initial request.

@@ -37,25 +37,26 @@ def _numbers_cached(text: str):
 
 class ConsolidateMixin:
     def maintenance(self, now: float | None = None, consolidate: bool = True,
-                    time_budget: float | None = MAINTENANCE_BUDGET) -> int:
+                    time_budget: float | None = MAINTENANCE_BUDGET, scope: str | None = None) -> int:
         """Purge expired, unpinned notes (returns how many) and consolidate new notes, for at most *time_budget*
         seconds after the first batch (None: no limit; the rest is done by the next call). Search never deletes."""
         now = _now() if now is None else now
+        clause, params = (" AND scope=?", (scope,)) if scope is not None else ("", ())
         self.flush_access(now)
         with self._lock, self.conn:
             # hot notes (recalled within the last half-life) get one more TTL period instead of being purged
             for r in self.conn.execute(
                     "SELECT id, kind, expires_at FROM notes WHERE expires_at IS NOT NULL AND expires_at <= ? AND "
-                    "pinned=0 AND last_access IS NOT NULL AND last_access > ?",
-                    (now, now - HOT_HALF_LIFE_DAYS * DAY)).fetchall():
+                    "pinned=0 AND last_access IS NOT NULL AND last_access > ?" + clause,
+                    (now, now - HOT_HALF_LIFE_DAYS * DAY, *params)).fetchall():
                 if default_expiry(r["kind"], now):
                     self.conn.execute("UPDATE notes SET expires_at=? WHERE id=?",
                                       (default_expiry(r["kind"], now), r["id"]))
             ids = [r[0] for r in self.conn.execute(
-                "SELECT id FROM notes WHERE expires_at IS NOT NULL AND expires_at <= ? AND pinned=0", (now,))]
+                "SELECT id FROM notes WHERE expires_at IS NOT NULL AND expires_at <= ? AND pinned=0" + clause, (now, *params))]
             self._delete_ids(ids)
         if consolidate:
-            self.consolidate(time_budget=time_budget)
+            self.consolidate(time_budget=time_budget, scope=scope)
         return len(ids)
 
     # -- consolidation ------------------------------------------------------------------------------------------
@@ -71,12 +72,12 @@ class ConsolidateMixin:
         q = ",".join("?" * len(terms))
         return [r[0] for r in self.conn.execute(
             f"SELECT p.note_id FROM postings p CROSS JOIN notes n ON n.id=p.note_id WHERE p.term IN ({q}) AND p.field=0 "
-            f"AND p.note_id != ? AND n.status='active' AND n.locked=0 GROUP BY p.note_id "
+            f"AND p.note_id != ? AND n.scope=(SELECT scope FROM notes WHERE id=?) AND n.status='active' AND n.locked=0 GROUP BY p.note_id "
             f"HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC LIMIT 40",
-            (*terms, nid, max(1, min(3, len(terms) // 2))))]
+            (*terms, nid, nid, max(1, min(3, len(terms) // 2))))]
 
     def consolidate(self, full: bool = False, now: float | None = None, time_budget: float | None = None,
-                    batch: int = CONSOLIDATE_BATCH) -> dict:
+                    batch: int = CONSOLIDATE_BATCH, scope: str | None = None) -> dict:
         """Cluster near-duplicate notes and supersede outdated state notes. Never deletes: merged notes get
         status='merged' (canonical_id -> kept note), outdated ones status='superseded'; both are hidden from search
         by default (their matches are credited to the canonical note) and can be restored. The kept note is the
@@ -88,12 +89,13 @@ class ConsolidateMixin:
         (stats['remaining'] says how many are left)."""
         now = _now() if now is None else now
         t0 = time.monotonic()
+        clause, params = (" AND scope=?", (scope,)) if scope is not None else ("", ())
         stats = {"examined": 0, "merged": 0, "superseded": 0}
         with self._lock, self.conn:
             if full:
-                self.conn.execute("UPDATE notes SET consolidated_at=NULL WHERE status='active'")
+                self.conn.execute("UPDATE notes SET consolidated_at=NULL WHERE status='active'" + clause, params)
             todo = [r[0] for r in self.conn.execute(
-                "SELECT id FROM notes WHERE consolidated_at IS NULL AND status='active' AND locked=0 ORDER BY id")]
+                "SELECT id FROM notes WHERE consolidated_at IS NULL AND status='active' AND locked=0" + clause + " ORDER BY id", params)]
             dfs = dict(self.conn.execute(
                 "SELECT term, COUNT(*) FROM postings WHERE field=0 AND length(term) > 1 GROUP BY term")) if todo else {}
         cache: dict[int, sqlite3.Row] = {}
@@ -118,6 +120,9 @@ class ConsolidateMixin:
                 break   # always finish one batch, so even a tiny budget makes progress
             chunk = todo[lo:lo + max(1, batch)]
             with self._lock, self.conn:
+                self.conn.execute("BEGIN IMMEDIATE")
+                cache.clear()
+                ents_cache.clear()
                 for nid in chunk:
                     me = info(nid)
                     if me is None or me["status"] != "active":
@@ -126,7 +131,7 @@ class ConsolidateMixin:
                     best = None
                     for cid in self._similar_candidates(nid, dfs):
                         other = info(cid)
-                        if other is None or other["status"] != "active" or other["review"] != me["review"]:
+                        if other is None or other["status"] != "active" or other["review"] != me["review"] or other["scope"] != me["scope"]:
                             continue   # a pending note is merged only after it is confirmed (it must not hide a confirmed one)
                         j, c = _set_sim(feats[nid], feats[cid])
                         if j < SUPERSEDE_JACCARD and c < MERGE_CONTAINMENT:
@@ -147,25 +152,26 @@ class ConsolidateMixin:
             if len(cache) > 20000:   # bound memory on very large databases
                 cache.clear(); feats.clear(); ents_cache.clear()
         stats["remaining"] = len(todo) - done
-        stats["stale"] = self.mark_stale()
+        stats["stale"] = self.mark_stale(scope=scope)
         stats["hidden_total"] = self.conn.execute(
-            "SELECT COUNT(*) FROM notes WHERE status!='active'").fetchone()[0]
+            "SELECT COUNT(*) FROM notes WHERE status!='active'" + clause, params).fetchone()[0]
         return stats
 
-    def mark_stale(self) -> int:
+    def mark_stale(self, scope: str | None = None) -> int:
         """Soft supersede for capacity facts. For each attribute (swap/ram) the newest active state note that
         states a size is current; older state notes sharing an entity with it and stating a different size get a
         'stale_by' link and a ranking penalty in search. Nothing is hidden, so the other facts in a mixed note
         (firewall, CPU, ...) stay searchable. Recomputed from scratch on every call."""
         with self._lock, self.conn:
-            self.conn.execute("DELETE FROM note_links WHERE rel='stale_by'")
+            clause, params = (" AND scope=?", (scope,)) if scope is not None else ("", ())
+            self.conn.execute("DELETE FROM note_links WHERE rel='stale_by' AND src IN (SELECT id FROM notes WHERE 1=1" + clause + ")", params)
             rows = self.conn.execute(
-                "SELECT id, content, COALESCE(event_at, created_at) AS t FROM notes "
-                "WHERE status='active' AND kind='state' ORDER BY t, id").fetchall()
-            by_attr: dict[str, list] = defaultdict(list)
+                "SELECT id, scope, review, content, COALESCE(event_at, created_at) AS t FROM notes "
+                "WHERE status='active' AND kind='state'" + clause + " ORDER BY t, id", params).fetchall()
+            by_attr: dict[tuple, list] = defaultdict(list)
             for r in rows:
                 for attr, mb in slot_values(r["content"]).items():
-                    by_attr[attr].append((r["t"], r["id"], mb))
+                    by_attr[(r["scope"], r["review"], attr)].append((r["t"], r["id"], mb))
             ents: dict[int, set] = {}
 
             def ents_of(i: int) -> set:
@@ -204,7 +210,7 @@ class ConsolidateMixin:
             return {}
         q = ",".join("?" * len(ids))
         return {r[0]: r[1] for r in self.conn.execute(
-            f"SELECT src, dst FROM note_links WHERE rel='stale_by' AND src IN ({q})", ids)}
+            f"SELECT src, dst FROM note_links JOIN notes a ON a.id=src JOIN notes b ON b.id=dst AND a.scope=b.scope WHERE rel='stale_by' AND src IN ({q})", ids)}
 
     @staticmethod
     def _nums(row) -> frozenset:
@@ -240,7 +246,7 @@ class ConsolidateMixin:
         link = "merged_into" if rel == "merged" else "superseded_by"
         proof = self.conn.execute("SELECT proof_count FROM notes WHERE id=?", (drop,)).fetchone()[0]
         self.conn.execute("UPDATE notes SET status=?, canonical_id=? WHERE id=?", (status, keep, drop))
-        self.conn.execute("UPDATE notes SET canonical_id=? WHERE canonical_id=?", (keep, drop))
+        self.conn.execute("UPDATE notes SET canonical_id=? WHERE canonical_id=? AND scope=(SELECT scope FROM notes WHERE id=?)", (keep, drop, keep))
         if rel == "merged":
             self.conn.execute("UPDATE notes SET proof_count=proof_count+? WHERE id=?", (proof, keep))
         self.conn.execute("INSERT OR IGNORE INTO note_links(src, dst, rel, created_at) VALUES (?,?,?,?)",
@@ -260,9 +266,11 @@ class ConsolidateMixin:
             return False
         now = _now() if now is None else now
         with self._lock, self.conn:
-            rows = {r["id"]: r for r in self.conn.execute("SELECT id, status, pinned, locked FROM notes WHERE id IN (?,?)",
+            rows = {r["id"]: r for r in self.conn.execute("SELECT id, scope, review, status, pinned, locked FROM notes WHERE id IN (?,?)",
                                                           (drop, keep))}
             if len(rows) != 2 or any(r["status"] != "active" for r in rows.values()):
+                return False
+            if rows[drop]["scope"] != rows[keep]["scope"] or rows[drop]["review"] != rows[keep]["review"]:
                 return False
             if rows[drop]["pinned"] or rows[drop]["locked"]:
                 return False
@@ -279,8 +287,8 @@ class ConsolidateMixin:
             if r["status"] == "rejected":
                 return self.restore_rejected(note_id)
             if r["status"] == "merged" and r["canonical_id"]:
-                self.conn.execute("UPDATE notes SET proof_count=MAX(1, proof_count-?) WHERE id=?",
-                                  (r["proof_count"], r["canonical_id"]))
+                self.conn.execute("UPDATE notes SET proof_count=MAX(1, proof_count-?) WHERE id=? AND scope=(SELECT scope FROM notes WHERE id=?)",
+                                  (r["proof_count"], r["canonical_id"], note_id))
             if r["status"] == "superseded" and r["canonical_id"]:
                 # undo the validity end that _fold set (only if it is still that value; a user-set valid_to stays)
                 k = self.conn.execute("SELECT event_at, created_at FROM notes WHERE id=?",
@@ -302,7 +310,7 @@ class ConsolidateMixin:
                     break
                 q = ",".join("?" * len(frontier))
                 rows = self.conn.execute(f"SELECT l.rel, n.* FROM note_links l JOIN notes n ON n.id=l.src "
-                                         f"WHERE l.dst IN ({q})", frontier).fetchall()
+                                         f"JOIN notes parent ON parent.id=l.dst AND parent.scope=n.scope WHERE l.dst IN ({q})", frontier).fetchall()
                 frontier = []
                 for r in rows:
                     if r["id"] not in seen:
