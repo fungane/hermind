@@ -87,8 +87,8 @@ def test_env_configuration(mcp_spawn, tmp_path):
     assert row == ("mcp:envagent",)
 
 
-def test_default_database_is_created_under_home(mcp_spawn, tmp_path):
-    c = mcp_spawn()
+def test_writable_default_database_is_created_under_home(mcp_spawn, tmp_path):
+    c = mcp_spawn("--write")
     c.call("memory_list")
     assert (tmp_path / ".hermind" / "memory.db").exists()
 
@@ -200,7 +200,7 @@ def test_stray_print_cannot_corrupt_stdout(tmp_path):
         "    print('STRAY DEBUG LINE')\n"
         "    return orig(self, msg)\n"
         "hm.HermindMCP.handle_message = noisy\n"
-        "sys.exit(hm.main(['--db', sys.argv[0] + '.db']))\n")
+        "sys.exit(hm.main(['--db', ':memory:']))\n")
     p = subprocess.run([sys.executable, "-I", "-c", code], input='{"jsonrpc":"2.0","id":1,"method":"ping"}\n',
                        capture_output=True, text=True, cwd=str(tmp_path), env={"HOME": str(tmp_path), "USERPROFILE": str(tmp_path),
                                                                  **{k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ}})   # Windows Python cannot start without it

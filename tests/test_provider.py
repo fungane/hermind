@@ -70,9 +70,10 @@ def test_sync_turn_truncates(provider):
     assert len(provider._store.list(kind="chat")[0]["content"]) <= 620
 
 
-def test_cron_session_is_skipped(pkg, tmp_path):
+def test_cron_session_is_skipped(pkg, tmp_path, store_mod):
     for kwargs, sid in (({"agent_context": "cron"}, "s1"), ({"platform": "cron"}, "s2"), ({}, "cron_daily_123")):
         p = pkg.HermindProvider(config={"db_path": str(tmp_path / f"{sid}.db")})
+        store_mod.DecisionStore(str(tmp_path / f"{sid}.db")).close()
         p.initialize(sid, hermes_home=str(tmp_path), **kwargs)
         p.sync_turn("今日新聞摘要", "內容……")
         p.on_session_end([{"role": "user", "content": "今日新聞"}, {"role": "assistant", "content": "好"}])
@@ -94,7 +95,8 @@ def test_session_end_captures_last_exchange(provider):
     assert "SQLite" in provider._store.list(kind="chat")[0]["content"]
 
 
-def test_subagent_is_read_only(pkg, tmp_path):
+def test_subagent_is_read_only(pkg, tmp_path, store_mod):
+    store_mod.DecisionStore(str(tmp_path / "s.db")).close()
     p = pkg.HermindProvider(config={"db_path": str(tmp_path / "s.db")})
     p.initialize("s", hermes_home=str(tmp_path), agent_context="subagent")
     assert "error" in json.loads(p.handle_tool_call("memory_remember", {"content": "x", "keywords": "y"}))
@@ -374,7 +376,7 @@ def test_valid_tool_calls_are_not_errors(provider):
     ok("memory_forget", id=nid)
 
 
-def test_a_broken_handler_gives_a_neutral_error_and_a_warning_with_the_traceback(provider, monkeypatch, caplog):
+def test_a_broken_handler_gives_a_neutral_error_and_a_warning_without_private_values(provider, monkeypatch, caplog):
     import logging
     secret_text = "Zorblax backup runs at 03:00 on node seven."
 
@@ -386,7 +388,7 @@ def test_a_broken_handler_gives_a_neutral_error_and_a_warning_with_the_traceback
     assert out["error"].startswith("memory_search failed (RuntimeError)") and "check the argument types" not in out["error"]
     assert secret_text not in out["error"]
     recs = [r for r in caplog.records if r.levelno == logging.WARNING and "memory_search failed" in r.getMessage()]
-    assert recs and recs[0].exc_info and recs[0].exc_info[0] is RuntimeError
+    assert recs and recs[0].exc_info is None and secret_text not in caplog.text
     # an argument problem keeps the hint
     monkeypatch.setattr(provider, "_search", lambda a: (_ for _ in ()).throw(OverflowError("int too large")))
     out = json.loads(provider.handle_tool_call("memory_search", {"query": "x"}))
@@ -406,5 +408,5 @@ def test_prefetch_failures_are_warned_once_per_error_class(provider, monkeypatch
         monkeypatch.setattr(provider, "_prefetch", fail(KeyError))
         assert provider.prefetch("third") == ""
     warns = [r for r in caplog.records if r.levelno == logging.WARNING and "prefetch failed" in r.getMessage()]
-    assert len(warns) == 2 and all(r.exc_info for r in warns)                     # RuntimeError once, KeyError once
+    assert len(warns) == 2 and all(r.exc_info is None for r in warns)                     # RuntimeError once, KeyError once
     assert [r for r in caplog.records if r.levelno == logging.DEBUG and "prefetch failed" in r.getMessage()]   # the repeat is quiet

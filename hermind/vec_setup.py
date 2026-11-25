@@ -227,14 +227,22 @@ def embed_all(db: str, cfg: dict | None = None, *, batch: int = 64, log=None) ->
     store = DecisionStore(db, track_access=False)
     t, total = time.time(), 0
     try:
-        while True:
-            n = vi.index_missing(store, batch)
-            if not n:
+        # The offline operator selected the whole database. Keep each worker
+        # batch and its stale-result checks confined to a single owning scope.
+        scopes = store.conn.execute("SELECT DISTINCT scope FROM notes WHERE status='active'").fetchall()
+        left = False
+        for (scope,) in scopes:
+            store.scope = scope
+            while True:
+                n = vi.index_missing(store, batch)
+                if not n:
+                    break
+                total += n
+                if log:
+                    log(f"{total} notes embedded, {time.time() - t:.0f}s")
+            if store.missing_vectors(vi.model_name, 1):
+                left = True
                 break
-            total += n
-            if log:
-                log(f"{total} notes embedded, {time.time() - t:.0f}s")
-        left = len(store.missing_vectors(vi.model_name, 1))
     finally:
         vi.close()
         store.close()
@@ -242,7 +250,7 @@ def embed_all(db: str, cfg: dict | None = None, *, batch: int = 64, log=None) ->
            "profile": cfg["profile"], "db": db, "notes": notes}
     if left:
         out["error"] = (f"some notes still have no vector for '{vi.model_name}': the embedding worker did not answer "
-                        f"(see {db}.vec.log)")
+                        "check the model, runtime and database driver")
     return out
 
 

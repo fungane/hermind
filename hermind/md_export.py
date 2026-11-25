@@ -13,7 +13,11 @@ A non-empty folder is refused unless force (which overwrites files of the same n
 
 from __future__ import annotations
 
+import contextlib
 import json
+import secrets
+import stat
+import sys
 import os
 import time
 from collections import defaultdict
@@ -33,17 +37,65 @@ class FolderNotEmpty(Exception):
     """The output folder already has files in it and force was not given."""
 
 
-def _private_write(path: Path, text: str) -> None:
-    """Write *text* to *path* readable by the owner only (mode 600), like the JSON export: notes can be sensitive."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.chmod(path, 0o600)                     # a file that existed (--force) would otherwise keep its old mode
+@contextlib.contextmanager
+def directory(path, *, create=False, parent_fd=None):
+    """Walk directories relative to held descriptors, rejecting symlinks at every step."""
+    if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+        raise OSError("safe export requires POSIX directory descriptors")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if parent_fd is None:
+        path = Path(os.path.abspath(path))
+        # macOS ships these root-owned links as part of its filesystem layout.
+        if sys.platform == "darwin" and path.parts[1:2] in (("tmp",), ("var",)):
+            path = Path("/private").joinpath(*path.parts[1:])
+        fd = os.open(path.anchor, flags)
+        parts = path.parts[1:]
+    else:
+        path = Path(path)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("invalid export subdirectory")
+        fd = os.dup(parent_fd)
+        parts = path.parts
+    try:
+        for part in parts:
+            if create:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
 
 
-def _private_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path, 0o700)
+def write_at(fd, name, text, *, force):
+    if not name or Path(name).name != name or name in (".", ".."):
+        raise ValueError("invalid export filename")
+    if force:
+        try:
+            mode = os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(mode):
+                raise OSError("export destination must be a regular file")
+    temp = ".hermind-" + secrets.token_hex(16)
+    out = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    try:
+        with os.fdopen(out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        if force:
+            os.replace(temp, name, src_dir_fd=fd, dst_dir_fd=fd)
+        else:
+            os.link(temp, name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+    finally:
+        try:
+            os.unlink(temp, dir_fd=fd)
+        except FileNotFoundError:
+            pass
 
 
 def export_time() -> str:
@@ -67,23 +119,21 @@ def collect(store, include_history: bool, scope: str | None) -> list[dict]:
     return [store._row(r) for r in store.conn.execute(sql + " ORDER BY id", args)]
 
 
-def check_folder(dest: Path, force: bool) -> None:
-    if dest.exists() and any(dest.iterdir()) and not force:
-        raise FolderNotEmpty(f"{dest} is not empty; choose a new folder or pass --force (overwrites same-named files)")
-
-
 def write_folder(store, dest, *, by: str = "kind", include_history: bool = False, scope: str | None = "*",
                  force: bool = False) -> dict:
-    """Write the folder. *store* is an open DecisionStore (only read). Returns {"notes", "folders", "root", "by_status"}."""
-    dest = Path(dest).expanduser()
-    check_folder(dest, force)
+    root = Path(dest).expanduser().absolute()
+    with directory(root, create=True) as fd:
+        if not force and os.listdir(fd):
+            raise FolderNotEmpty("export directory is not empty; choose an empty folder or pass --force")
+        return _write_folder(store, root, fd, by, include_history, scope, force)
+
+
+def _write_folder(store, root, root_fd, by, include_history, scope, force):
     db = Path(store.db_path)
     notes = collect(store, include_history, scope)
     ids = [n["id"] for n in notes]
     metas = {n["id"]: md_notes.link_meta(store.conn, n) for n in notes}
-    ents = store.note_entities(ids) if by == "entity" else {}
-    _private_dir(dest)
-    root = dest.resolve()
+    ents = store.note_entities(ids, [scope] if scope and scope != "*" else None) if by == "entity" else {}
     by_dir: dict[Path, list[tuple[dict, str]]] = defaultdict(list)
     for n in notes:
         if by == "entity":
@@ -91,25 +141,23 @@ def write_folder(store, dest, *, by: str = "kind", include_history: bool = False
         else:
             rel_dir = Path(md_notes.slug(n["kind"], 20))
         name = f"{n['id']:05d}-{md_notes.slug(l0(n['content'], 60))}.md"
-        path = (root / rel_dir / name).resolve()
-        if root not in path.parents:                     # never write outside OUT, whatever the slugs contain
-            continue
         meta = metas[n["id"]]
-        _private_dir(path.parent)
-        _private_write(path, md_notes.render(n, meta))
-        by_dir[path.parent].append((n, name))
+        with directory(rel_dir, create=True, parent_fd=root_fd) as fd:
+            write_at(fd, name, md_notes.render(n, meta), force=force)
+        by_dir[root / rel_dir].append((n, name))
     for d, items in by_dir.items():
         lines = [f"# {d.relative_to(root)}", "", f"{len(items)} notes", ""]
         for n, name in items:
             lines.append(f"- [#{n['id']}]({md_notes.link_target(name)}) {n['kind']} · {md_notes.iso_day(n['created_at'])} · "
                          f"{md_notes.note_status(n)} — {l0(n['content'], 80)}")
-        _private_write(d / "index.md", "\n".join(lines) + "\n")
+        with directory(d.relative_to(root), parent_fd=root_fd) as fd:
+            write_at(fd, "index.md", "\n".join(lines) + "\n", force=force)
     top = ["# hermind export", "", f"{len(notes)} notes from {db.name}, layout: by {by}", ""]
     top += [f"- [{d.relative_to(root)}]({md_notes.link_target(d.relative_to(root).as_posix() + '/index.md')}) — {len(items)} notes"
             for d, items in sorted(by_dir.items())]
-    _private_write(root / "index.md", "\n".join(top) + "\n")
-    _private_write(root / MARKER, json.dumps({"db": str(db), "notes": len(notes), "by": by,
-                                           "exported": export_time()}) + "\n")
+    write_at(root_fd, "index.md", "\n".join(top) + "\n", force=force)
+    write_at(root_fd, MARKER, json.dumps({"db": db.name, "notes": len(notes), "by": by,
+                                           "exported": export_time()}) + "\n", force=force)
     by_status: dict[str, int] = {}
     for n in notes:
         by_status[n["status"]] = by_status.get(n["status"], 0) + 1

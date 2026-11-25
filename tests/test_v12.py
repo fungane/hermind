@@ -47,6 +47,7 @@ class _FakeLLM:
 
 
 def test_extracted_near_copy_refreshes_existing_note(provider):
+    provider._config["review_queue"] = False
     old = "Atlas 團隊的匯報練習：講者語速約每分鐘 120 字，600 字講了 5 分 10 秒"
     nid = json.loads(provider.handle_tool_call("memory_remember", {"content": old, "kind": "tech",
                                                                    "keywords": "匯報 語速"}))["id"]

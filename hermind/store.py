@@ -70,13 +70,22 @@ class DecisionStore(SchemaMixin, AuxMixin, EntityMixin, WriteMixin, ConsolidateM
 
     def __init__(self, db_path: str, synonyms_path: str | None = None, weights: dict | None = None,
                  boost: dict | None = None, scope: str = "default", track_access: bool = False,
-                 key: str | None = None, project_penalty=None, project_penalty_kinds=None):
+                 key: str | None = None, project_penalty=None, project_penalty_kinds=None, readonly: bool = False):
         self.db_path = str(db_path)
         self._key = key                       # kept for the backup made before a schema upgrade
-        if self.db_path != ":memory:":
+        self.readonly = readonly
+        self.snapshot = None
+        if self.db_path != ":memory:" and not readonly:
             folder = Path(self.db_path).expanduser().parent
             fresh = not folder.exists()
             folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Reserve a new main file before SQLite opens it, independent of umask.
+            try:
+                fd = os.open(self.db_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                pass
+            else:
+                os.close(fd)
             if fresh:                       # only a folder this call created; never tighten one the user already had
                 try:
                     os.chmod(folder, 0o700)
@@ -84,10 +93,26 @@ class DecisionStore(SchemaMixin, AuxMixin, EntityMixin, WriteMixin, ConsolidateM
                     pass
         self._lock = threading.RLock()
         # plain sqlite3 unless a key is set (key= or HERMIND_DB_KEY_FILE / HERMIND_DB_KEY): then SQLCipher, see dbdriver.py
-        self.conn = dbdriver.connect(self.db_path, key, check_same_thread=False)
+        if readonly and self.db_path != ":memory:":
+            self.snapshot = dbdriver.ReadSnapshot(self.db_path)
+            try:
+                plain = dbdriver.is_plaintext_file(self.snapshot.path)
+                configured_key = key if key is not None else dbdriver.key_from_env()
+                if plain is False and not configured_key:
+                    raise dbdriver.EncryptionError("encrypted or not a SQLite database; check format or set HERMIND_DB_KEY_FILE")
+                if plain and configured_key:
+                    raise dbdriver.EncryptionError("database is not encrypted yet; check the configured key")
+                uri = self.snapshot.path.as_uri() + "?mode=ro"
+                self.conn = dbdriver.connect(uri, configured_key, use_env=False, uri=True, check_same_thread=False)
+                self.conn.execute("PRAGMA query_only=ON")
+            except BaseException:
+                self.snapshot.close()
+                raise
+        else:
+            self.conn = dbdriver.connect(self.db_path, key, check_same_thread=False)
         self.conn.row_factory = dbdriver.row_factory(self.conn)
         self.encrypted = type(self.conn).__module__.split(".")[0] != "sqlite3"
-        if self.db_path != ":memory:":
+        if not readonly and self.db_path != ":memory:":
             self._enable_wal()
             self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute("PRAGMA cache_size=-4000")  # ~4 MB page cache
@@ -101,13 +126,25 @@ class DecisionStore(SchemaMixin, AuxMixin, EntityMixin, WriteMixin, ConsolidateM
         self.project_matcher = ProjectMatcher()
         # access tracking (OpenViking lifecycle): returned ids are buffered and written in one batch at most every
         # ACCESS_FLUSH_SECONDS (and on close), so searching does not cause a write per query.
-        self.track_access = track_access
+        self.track_access = track_access and not readonly
         self._access_buf: Counter = Counter()
         self._access_flushed = _now()
         self._ent_cache: dict | None = None
-        self._init_schema()
-        self._ensure_tokenizer_version()
-        self._private_files()
+        if self.snapshot is not None:
+            try:
+                if (self.conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION
+                        or self.get_meta("tokenizer_version") != TOKENIZER_VERSION):
+                    raise ValueError("Schema or index requires a matching writable Hermind installation")
+            except BaseException:
+                self.close()
+                raise
+        else:
+            self._init_schema()
+            self._ensure_tokenizer_version()
+            if readonly:
+                self.conn.execute("PRAGMA query_only=ON")
+            elif self.db_path != ":memory:":
+                self._private_files()
 
     def _enable_wal(self, attempts: int = 100) -> None:
         """journal_mode=WAL on a file other processes are creating or opening at the same moment fails at once with

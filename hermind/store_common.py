@@ -49,7 +49,7 @@ LEARN_WINDOW_SECONDS = 600.0
 EXPANSION_WEIGHT = 0.75
 K1, B = 1.2, 0.75
 RECENCY_HALF_LIFE_DAYS = 120.0
-SCHEMA_VERSION = 6   # 6: project (one nullable column); 5: review, valid_from, shown_count/opened_count/fb_at (additive columns only)
+SCHEMA_VERSION = 7   # 7: scope-specific forget markers; 6: project (one nullable column); 5: review, valid_from, shown_count/opened_count/fb_at (additive columns only)
 # Bump when textnorm.tokenize/stem output changes: an existing database is then re-indexed once on open.
 TOKENIZER_VERSION = "2"  # 2: derivational English suffixes (presentation/present) in textnorm.stem
 # Skip scoring terms whose document frequency exceeds this share of notes (True: CJK unigram, False: other).
@@ -327,7 +327,7 @@ def _parse_when(value) -> float | None:
         return float(value)
     ds = parse_dates(str(value))
     if not ds:
-        raise ValueError(f"cannot parse date: {value!r}")
+        raise ValueError("cannot parse date (use YYYY-MM-DD)")
     return ds[0]
 
 
@@ -338,7 +338,7 @@ def parse_valid(value) -> float | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if isinstance(value, bool):
-        raise ValueError(f"cannot parse date: {value!r}")
+        raise ValueError("cannot parse date (use YYYY-MM-DD)")
     if isinstance(value, (int, float)):
         return float(value)
     text = str(value).strip().replace("/", "-")
@@ -351,7 +351,7 @@ def parse_valid(value) -> float | None:
             text = text[:-1] + "+00:00"
         return _datetime.fromisoformat(text).timestamp()
     except ValueError:
-        raise ValueError(f"cannot parse date: {value!r} (use YYYY-MM-DD)") from None
+        raise ValueError("cannot parse date (use YYYY-MM-DD)") from None
 
 
 def day_bounds(value) -> tuple[float, float]:

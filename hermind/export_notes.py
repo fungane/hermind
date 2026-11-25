@@ -63,9 +63,24 @@ def collect_records(conn, *, live_only: bool = False, scope: str | None = None) 
     links: dict[int, list] = {}
     for src, dst, rel in conn.execute("SELECT src, dst, rel FROM note_links ORDER BY src, dst, rel"):
         links.setdefault(src, []).append({"to": dst, "rel": rel})
+    restricted = bool(scope and scope != "*")
+    visible_ids = {r[0] for r in conn.execute("SELECT id FROM notes WHERE scope=?", (scope,))} if restricted else None
+    scoped_aliases = {}
+    for nid, name, alias in conn.execute(
+            "SELECT a.note_id,e.name,a.alias FROM note_aliases a JOIN notes n ON n.id=a.note_id "
+            "JOIN entities e ON e.id=a.entity_id" + (" WHERE n.scope=?" if restricted else "") +
+            " ORDER BY a.rowid", (scope,) if restricted else ()):
+        scoped_aliases.setdefault((nid, name), []).append(alias)
     for rec in records:
         rec["entities"] = ents.get(rec["id"], [])
-        rec["links"] = links.get(rec["id"], [])
+        for entity in rec["entities"]:
+            owned = scoped_aliases.get((rec["id"], entity["name"]), [])
+            entity["note_aliases"] = owned
+            if restricted:
+                entity["aliases"] = owned
+        rec["links"] = [link for link in links.get(rec["id"], []) if visible_ids is None or link["to"] in visible_ids]
+        if visible_ids is not None and rec.get("canonical_id") not in visible_ids:
+            rec["canonical_id"] = None
     return records
 
 
@@ -92,18 +107,13 @@ def to_json(records: list[dict]) -> str:
 def write_private_file(path: str, text: str, *, force: bool = False) -> Path:
     """Write *text* to *path* with mode 600. An existing file is never overwritten unless *force*."""
     dest = Path(os.path.expanduser(path))
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if force else os.O_EXCL)
     try:
-        fd = os.open(dest, flags, 0o600)
+        with md_export.directory(dest.parent) as fd:
+            md_export.write_at(fd, dest.name, text if text.endswith("\n") else text + "\n", force=force)
     except FileExistsError:
-        raise ExportError(f"{dest} already exists: choose another file name or pass --force to overwrite it") from None
-    with contextlib.ExitStack() as stack:
-        try:
-            os.fchmod(fd, 0o600)                        # a file that --force overwrites may have had another mode
-        except (AttributeError, OSError):
-            pass                                        # Windows has no POSIX modes
-        f = stack.enter_context(os.fdopen(fd, "w", encoding="utf-8"))
-        f.write(text if text.endswith("\n") else text + "\n")
+        raise ExportError("destination already exists; choose another name or pass --force") from None
+    except OSError:
+        raise ExportError("cannot use export destination; check permissions and choose a regular, symlink-free destination") from None
     return dest
 
 
@@ -187,6 +197,8 @@ def run_export(store, *, fmt: str = "json", out: str | None = None, force: bool 
             raise ExportError("--format markdown writes a folder: give it with --out DIR")
         try:
             res = md_export.write_folder(store, out, by=by, include_history=include_history, scope=scope, force=force)
+        except OSError:
+            raise ExportError("cannot use export destination; check permissions and choose a symlink-free directory") from None
         except md_export.FolderNotEmpty as e:
             raise ExportError(str(e)) from None
         return {"ok": True, "format": fmt, "exported": res["notes"], "folders": res["folders"], "file": res["root"],

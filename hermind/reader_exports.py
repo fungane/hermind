@@ -87,7 +87,11 @@ class ExportSource:
                     self.sizes[full.relative_to(path).as_posix()] = size
         elif path.is_file() and zipfile.is_zipfile(path):
             self.zf = zipfile.ZipFile(path)
-            for info in self.zf.infolist():
+            infos = self.zf.infolist()
+            if len(infos) > 100_000 or sum(i.file_size for i in infos) > 4 * 1024**3:
+                self.zf.close()
+                raise ImportFailed("archive exceeds the supported entry count or expanded size; split the export")
+            for info in infos:
                 if not info.is_dir():
                     why = _unsafe_member(info)
                     if why:
@@ -112,7 +116,10 @@ class ExportSource:
 
     def read_bytes(self, name: str) -> bytes:
         with self.open(name) as fh:
-            return fh.read()
+            data = fh.read(64 * 1024**2 + 1)
+            if len(data) > 64 * 1024**2:
+                raise ImportFailed("JSON member exceeds 64 MiB; split the export")
+            return data
 
     def close(self) -> None:
         if self.zf is not None:
@@ -130,6 +137,9 @@ def open_source(path: Path) -> ExportSource | None:
         return ExportSource(path)
     except (ImportFailed, OSError, zipfile.BadZipFile):
         return None
+
+
+MAX_ITEM_CHARS = 16 * 1024**2
 
 
 def iter_json_array(stream, step: int = 1 << 20):
@@ -173,8 +183,13 @@ def iter_json_array(stream, step: int = 1 << 20):
             except ValueError as exc:
                 if eof:
                     raise ValueError(f"not valid JSON ({exc})") from None
-                grow *= 2
+                remaining = MAX_ITEM_CHARS - (len(buf) - pos)
+                if remaining <= 0:
+                    raise ValueError("JSON element is too large; split the input")
+                grow = min(grow * 2, remaining)
                 more(grow)
+        if end - pos > MAX_ITEM_CHARS:
+            raise ValueError("JSON element is too large; split the input")
         pos = end
         yield obj
 

@@ -10,7 +10,7 @@ Chinese or Cantonese. No server, no cloud account, no LLM or API key needed. Bui
 
 English · [繁體中文](README.zh-TW.md)
 
-![version](https://img.shields.io/badge/version-1.1.1-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![version](https://img.shields.io/badge/version-1.1.2-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![deps](https://img.shields.io/badge/runtime%20deps-stdlib%20only-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 </div>
@@ -27,7 +27,7 @@ That is real output from a fresh database with three notes and lexical search on
 the note can still miss; the optional [semantic search](docs/setup.md#semantic-search) closes most of that gap with a
 local model (one download, no API key).
 
-**Privacy in 1.1.1:** Hermind cleans marked private text from selected fields when importing its own JSON. Preview and apply reports explain invalid metadata without quoting its value. Existing records are not rewritten. See the [changelog](CHANGELOG.md#111) for the batch-tool and model-client fixes.
+**Upgrading to 1.1.2** brings scope and privacy fixes and upgrades the database to schema 7. Stop all clients that share the database and take a consistent backup. Upgrade the writer before reconnecting read-only clients. To roll back, preserve any newer writes and restore the previous program with the pre-upgrade backup. [Changelog](CHANGELOG.md#112)
 
 ## Install
 
@@ -38,7 +38,7 @@ up for me."* It asks you where to install, shows a dry run, backs up first and g
 **Hermes agent** (recall before every turn, capture after every reply, review queue):
 
 ```bash
-git clone --branch v1.1.1 https://github.com/fungane/hermind.git ~/hermind
+git clone --branch v1.1.2 https://github.com/fungane/hermind.git ~/hermind
 cd ~/hermind
 python3 hermind_cli.py install-hermes --dry-run     # shows what it will do; add --profile NAME for another profile
 python3 hermind_cli.py install-hermes               # backs up, copies the plugin, checks the result
@@ -48,7 +48,7 @@ hermes config set memory.provider hermind           # then restart the Hermes ga
 **Claude Code, Cursor, Codex and other MCP clients** (needs [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-claude mcp add hermind -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.1.1 hermind-mcp
+claude mcp add hermind -e HERMIND_MCP_WRITE=1 -- uvx --from git+https://github.com/fungane/hermind@v1.1.2 hermind-mcp
 ```
 
 `hermind config CLIENT --write` prints the entry for 20+ other clients ([docs/setup.md](docs/setup.md#mcp-clients)).
@@ -60,14 +60,14 @@ TypeScript SDK; the other entries follow each client's documentation.
 **Check it, and try it without any agent:**
 
 ```bash
-uvx --from git+https://github.com/fungane/hermind@v1.1.1 hermind selftest     # a few seconds; touches no real data
-uvx --from git+https://github.com/fungane/hermind@v1.1.1 hermind remember "Atlas uses PostgreSQL for orders" --keywords "orders database 訂單 資料庫"
-uvx --from git+https://github.com/fungane/hermind@v1.1.1 hermind search "which database for orders"
+uvx --from git+https://github.com/fungane/hermind@v1.1.2 hermind selftest     # a few seconds; touches no real data
+uvx --from git+https://github.com/fungane/hermind@v1.1.2 hermind remember "Atlas uses PostgreSQL for orders" --keywords "orders database 訂單 資料庫"
+uvx --from git+https://github.com/fungane/hermind@v1.1.2 hermind search "which database for orders"
 ```
 
-`@v1.1.1` pins the tested release; change the number to upgrade. Below, `hermind` stands for that whole
-`uvx --from git+https://github.com/fungane/hermind@v1.1.1 hermind` (or install the command once with
-`uv tool install git+https://github.com/fungane/hermind@v1.1.1`).
+`@v1.1.2` pins the tested release; change the number to upgrade. Below, `hermind` stands for that whole
+`uvx --from git+https://github.com/fungane/hermind@v1.1.2 hermind` (or install the command once with
+`uv tool install git+https://github.com/fungane/hermind@v1.1.2`).
 
 ## Your data
 

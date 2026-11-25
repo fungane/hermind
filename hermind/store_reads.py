@@ -68,8 +68,7 @@ class ReadMixin:
             return [r[0] for r in self.conn.execute(
                 "SELECT project FROM notes WHERE project IS NOT NULL GROUP BY project ORDER BY MIN(id)")]
 
-    @staticmethod
-    def _row(r: sqlite3.Row) -> dict:
+    def _row(self, r: sqlite3.Row) -> dict:
         d = {k: r[k] for k in ("id", "content", "kind", "keywords", "created_at", "expires_at", "source_session",
                                "pinned")}
         keys = r.keys()   # an allow-list: the internal `project` column is never copied into a note
@@ -78,16 +77,21 @@ class ReadMixin:
                   "shown_count", "opened_count", "fb_at", "locked"):
             if k in keys:
                 d[k] = r[k]
+        if d.get("canonical_id") and not self.conn.execute(
+                "SELECT 1 FROM notes WHERE id=? AND scope=?", (d["canonical_id"], d["scope"])).fetchone():
+            d["canonical_id"] = None
         return d
 
-    def note_entities(self, note_ids: Iterable[int]) -> dict[int, list[tuple[int, str, int]]]:
+    def note_entities(self, note_ids: Iterable[int], scopes=None) -> dict[int, list[tuple[int, str, int]]]:
         ids = list(note_ids)
         out: dict[int, list] = defaultdict(list)
         if not ids:
             return out
         q = ",".join("?" * len(ids))
-        for r in self.conn.execute(f"SELECT ne.note_id, e.id, e.name, e.df FROM note_entities ne JOIN entities e "
-                                   f"ON e.id=ne.entity_id WHERE ne.note_id IN ({q})", ids):
+        frequency = ("(SELECT COUNT(*) FROM note_entities owned JOIN notes n ON n.id=owned.note_id "
+                     "WHERE owned.entity_id=e.id" + self._scope_filter(scopes) + ")") if scopes else "e.df"
+        for r in self.conn.execute(f"SELECT ne.note_id, e.id, e.name, {frequency} FROM note_entities ne JOIN entities e "
+                                   f"ON e.id=ne.entity_id WHERE ne.note_id IN ({q})", [*(scopes or []), *ids]):
             out[r[0]].append((r[1], r[2], r[3]))
         return out
 
@@ -103,29 +107,41 @@ class ReadMixin:
         vargs = (as_end, as_end) if as_end is not None else ()
         timeline = timeline or as_end is not None
         with self._lock:
-            ids = self.detect_entities(entity)
+            scopes = self._scopes(None)
+            ids = self.detect_entities(entity, scopes=scopes)
             key = _entity_key(entity)
             row = self.conn.execute("SELECT id FROM entities WHERE key=?", (key,)).fetchone()
             if row:
                 ids = {row["id"]: 1.0, **ids}
-            if not ids:
-                return {"entity": entity, "found": False, "notes": [], "related_entities": []}
-            eid = next(iter(ids))
-            ent = self.conn.execute("SELECT * FROM entities WHERE id=?", (eid,)).fetchone()
+            scopes = self._scopes(None)
+            visible = f" AND n.scope IN ({','.join('?' * len(scopes))})" if scopes is not None else ""
             statuses = "('active','superseded')" if timeline else "('active')"
-            order = "ASC" if timeline else "DESC"
-            rows = self.conn.execute(
-                "SELECT n.* FROM note_entities ne JOIN notes n ON n.id=ne.note_id WHERE ne.entity_id=? AND "
-                f"n.status IN {statuses} AND (n.expires_at IS NULL OR n.expires_at > ? OR n.pinned=1 OR n.status='superseded')"
-                f"{vsql} ORDER BY COALESCE(n.event_at, n.created_at) {order}, n.id {order} LIMIT ?",
-                (eid, now, *vargs, int(limit))).fetchall()
-            if timeline and len(rows) == int(limit):   # keep the NEWEST `limit` notes, still shown oldest first
-                rows = self.conn.execute(
-                    "SELECT * FROM (SELECT n.* FROM note_entities ne JOIN notes n ON n.id=ne.note_id WHERE ne.entity_id=? "
-                    "AND n.status IN ('active','superseded') AND (n.expires_at IS NULL OR n.expires_at > ? OR n.pinned=1 "
-                    f"OR n.status='superseded'){vsql} ORDER BY COALESCE(n.event_at, n.created_at) DESC, n.id DESC "
-                    "LIMIT ?) ORDER BY COALESCE(event_at, created_at) ASC, id ASC",
-                    (eid, now, *vargs, int(limit))).fetchall()
+            visible += (f" AND n.status IN {statuses} AND (n.expires_at IS NULL OR n.expires_at > ?"
+                        " OR n.pinned=1 OR n.status='superseded')" + vsql)
+            visible_args = [*(scopes or []), now, *vargs]
+            members = (" FROM note_entities ne JOIN notes n ON n.id=ne.note_id"
+                       " WHERE ne.entity_id=?" + visible)
+            for eid in ids:
+                ent = self.conn.execute("SELECT * FROM entities WHERE id=?", (eid,)).fetchone()
+                if scopes is None:
+                    aliases = ent["aliases"].split("|")
+                else:
+                    labels = self.conn.execute(
+                        "SELECT a.alias FROM note_aliases a WHERE a.entity_id=? AND a.note_id IN "
+                        "(SELECT n.id" + members + ") ORDER BY a.rowid", [eid, eid, *visible_args])
+                    aliases = list(dict.fromkeys([*self.synonyms.group_of(ent["name"]), *(r[0] for r in labels)]))
+                    if key not in {_entity_key(a) for a in [ent["name"], *aliases]}:
+                        continue
+                mentions = self.conn.execute("SELECT COUNT(*)" + members, [eid, *visible_args]).fetchone()[0]
+                if mentions:
+                    break
+            else:
+                return {"entity": entity, "found": False, "notes": [], "related_entities": []}
+            rows = self.conn.execute("SELECT n.*" + members +
+                                     " ORDER BY COALESCE(n.event_at,n.created_at) DESC,n.id DESC LIMIT ?",
+                                     (eid, *visible_args, limit)).fetchall()
+            if timeline:
+                rows.reverse()
             notes = [self._row(r) for r in rows]
             if timeline:
                 stale = self.stale_ids([n["id"] for n in notes])
@@ -133,7 +149,8 @@ class ReadMixin:
                     if n["id"] in stale:
                         n["outdated_by"] = stale[n["id"]]
             rel = [{"name": r[0], "weight": r[1]} for r in self.conn.execute(
-                "SELECT e.name, l.weight FROM entity_links l JOIN entities e ON e.id = CASE WHEN l.a=? THEN l.b "
-                "ELSE l.a END WHERE l.a=? OR l.b=? ORDER BY l.weight DESC LIMIT 10", (eid, eid, eid))]
-        return {"entity": ent["name"], "found": True, "aliases": [a for a in ent["aliases"].split("|") if a],
-                "mentions": ent["df"], "notes": notes, "related_entities": rel}
+                "SELECT e.name, COUNT(*) FROM note_entities peer JOIN entities e ON peer.entity_id=e.id"
+                " WHERE peer.entity_id!=? AND peer.note_id IN (SELECT n.id" + members +
+                ") GROUP BY e.id ORDER BY COUNT(*) DESC, e.id LIMIT 10", [eid, eid, *visible_args])]
+        return {"entity": ent["name"], "found": True, "aliases": [a for a in aliases if a and _entity_key(a) != ent["key"]],
+                "mentions": mentions, "notes": notes, "related_entities": rel}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import glob
+
 from pathlib import Path
 
 try:
@@ -34,13 +36,15 @@ class SchemaMixin:
         if self.db_path == ":memory:":
             return
         old = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if old > SCHEMA_VERSION:
+            raise ValueError("database has a newer schema; use a matching Hermind version")
         has_notes = self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes'").fetchone()
         if not has_notes or not (0 < old < SCHEMA_VERSION):
             return
         src = Path(self.db_path).expanduser()
         try:
             made = backup_database(src, prefix=f"bak-v{old}", keep=self.KEEP_UPGRADE_BACKUPS, key=self._key,
-                                   prune_glob=src.name + ".bak-v*")
+                                   prune_glob=glob.escape(src.name) + ".bak-v*")
         except (BackupError, OSError) as e:
             raise RuntimeError(f"refusing to upgrade {src.name} (schema {old} -> {SCHEMA_VERSION}): could not back it up first ({e})") from e
         if made is None:                    # no readable file at that path: still no backup, so still no upgrade
@@ -141,6 +145,15 @@ class SchemaMixin:
             ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS vectors (note_id INTEGER PRIMARY KEY, model TEXT NOT NULL, vec BLOB NOT NULL);
+            CREATE TABLE IF NOT EXISTS note_aliases (
+                note_id INTEGER NOT NULL, entity_id INTEGER NOT NULL, alias TEXT NOT NULL,
+                UNIQUE(note_id, entity_id, alias)
+            );
+            CREATE INDEX IF NOT EXISTS note_aliases_entity ON note_aliases(entity_id);
+            CREATE TABLE IF NOT EXISTS scoped_tombstones (
+                scope TEXT NOT NULL, digest TEXT NOT NULL, note_id INTEGER, created_at REAL NOT NULL,
+                PRIMARY KEY(scope, digest)
+            ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS tombstones (
                 digest TEXT PRIMARY KEY,
                 note_id INTEGER,

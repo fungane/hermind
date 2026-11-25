@@ -28,15 +28,23 @@ class ReviewMixin:
         with self._lock:
             return [self._row(r) for r in self.conn.execute(sql, args)]
 
+    def _review_filter(self):
+        scopes = self._scopes(None)
+        if scopes is None:
+            return "", []
+        return f" AND scope IN ({','.join('?' * len(scopes))})", scopes
+
     def pending_count(self) -> int:
         with self._lock:
-            return self.conn.execute("SELECT COUNT(*) FROM notes WHERE status='active' AND review='pending'"
-                                     ).fetchone()[0]
+            clause, args = self._review_filter()
+            return self.conn.execute("SELECT COUNT(*) FROM notes WHERE status='active' AND review='pending'" + clause, args).fetchone()[0]
 
     def list_rejected(self, limit: int = 50) -> list[dict]:
         with self._lock:
+            clause, args = self._review_filter()
             return [self._row(r) for r in self.conn.execute(
-                "SELECT * FROM notes WHERE status='rejected' ORDER BY id DESC LIMIT ?", (max(1, min(int(limit), 500)),))]
+                "SELECT * FROM notes WHERE status='rejected'" + clause + " ORDER BY id DESC LIMIT ?",
+                [*args, max(1, min(int(limit), 500))])]
 
     def confirm(self, note_id: int) -> bool:
         """pending -> active. The note becomes eligible for consolidation again. False if it is not pending."""
@@ -58,23 +66,25 @@ class ReviewMixin:
         confirmed note is removed with forget(). False if there is nothing to reject."""
         now = _now() if now is None else now
         with self._lock, self.conn:
-            r = self.conn.execute("SELECT content FROM notes WHERE id=? AND status='active' AND review='pending'",
-                                  (note_id,)).fetchone()
-            if not r:
+            changed = self.conn.execute("UPDATE notes SET status='rejected', canonical_id=NULL "
+                                        "WHERE id=? AND status='active' AND review='pending'", (note_id,))
+            if not changed.rowcount:
                 return False
-            self.conn.execute("UPDATE notes SET status='rejected', canonical_id=NULL WHERE id=?", (note_id,))
-            self.conn.execute("INSERT OR IGNORE INTO tombstones(digest, note_id, created_at) VALUES (?,?,?)",
-                              (_digest(r["content"]), note_id, now))
+            r = self.conn.execute("SELECT content, scope FROM notes WHERE id=?", (note_id,)).fetchone()
+            self.conn.execute("INSERT OR IGNORE INTO scoped_tombstones(scope,digest,note_id,created_at) VALUES (?,?,?,?)",
+                              (r["scope"], _digest(r["content"]), note_id, now))
             return True
 
     def restore_rejected(self, note_id: int) -> bool:
         """rejected -> pending again (back in the queue), and the tombstone made for the rejection is lifted."""
         with self._lock, self.conn:
-            r = self.conn.execute("SELECT content FROM notes WHERE id=? AND status='rejected'", (note_id,)).fetchone()
-            if not r:
+            changed = self.conn.execute("UPDATE notes SET status='active', review='pending', consolidated_at=NULL "
+                                        "WHERE id=? AND status='rejected'", (note_id,))
+            if not changed.rowcount:
                 return False
-            self.conn.execute("UPDATE notes SET status='active', review='pending', consolidated_at=NULL WHERE id=?",
-                              (note_id,))
+            r = self.conn.execute("SELECT content, scope FROM notes WHERE id=?", (note_id,)).fetchone()
+            self.conn.execute("DELETE FROM scoped_tombstones WHERE scope=? AND digest=? AND note_id=?",
+                              (r["scope"], _digest(r["content"]), note_id))
             self.conn.execute("DELETE FROM tombstones WHERE digest=? AND note_id=?", (_digest(r["content"]), note_id))
             return True
 

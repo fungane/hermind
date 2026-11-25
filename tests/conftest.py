@@ -182,10 +182,14 @@ class MCPClient:
 
 
 @pytest.fixture
-def mcp_spawn(tmp_path):
+def mcp_spawn(tmp_path, store_mod):
     made = []
 
     def spawn(*args, env=None, handshake=True, name="c"):
+        if "--db" not in args and not (env or {}).get("HERMIND_DB") and "--write" not in args:
+            default = tmp_path / ".hermind" / "memory.db"
+            if not default.exists():
+                store_mod.DecisionStore(str(default)).close()
         c = MCPClient(tmp_path, *args, env=env, name=name)
         made.append(c)
         if handshake:

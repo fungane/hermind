@@ -40,7 +40,7 @@ def test_new_writes_keep_only_public_metadata(mcp_spawn, store_mod, tmp_path, su
 
     db = tmp_path / "memory.db"
     assert not db.exists()
-    client = mcp_spawn("--db", str(db), "--write", "--verbose")
+    client = mcp_spawn("--db", str(db), "--write", "--trust-writes", "--verbose")
 
     def call(tool, **args):
         reply, err = client.call_json(tool, **args)
@@ -124,9 +124,9 @@ def test_new_writes_keep_only_public_metadata(mcp_spawn, store_mod, tmp_path, su
     for reply in client.raw_lines:
         assert_minimised("wire reply", reply)
     usage = sql("SELECT kind, query FROM usage_log ORDER BY id")
-    assert ("search", edited) in usage
+    assert ("search", "") in usage and all(not q for _, q in usage)
     assert_minimised("usage log", usage)
-    for table in ("notes", "entities", "note_entities", "postings", "note_links"):
+    for table in ("notes", "entities", "note_entities", "note_aliases", "postings", "note_links"):
         assert_minimised(table, sql(f"SELECT * FROM {table}"))
 
     dest = tmp_path / "fresh.json"
@@ -140,8 +140,9 @@ def test_new_writes_keep_only_public_metadata(mcp_spawn, store_mod, tmp_path, su
     rows = {r["id"]: r for r in json.loads(raw)}
     assert len(rows) == sum(notes_by_status().values())
     assert rows[nid]["tags"] == f"{edited} {second}" and edited in rows[nid]["keywords"].split()
-    assert {"name": subject, "aliases": [alias, second, f"{first} catalogue"]} in rows[nid]["entities"]
-    assert rows[only["id"]]["tags"] == "" and {"name": only_name, "aliases": []} in rows[only["id"]]["entities"]
+    aliases = [alias, second, f"{first} catalogue"]
+    assert {"name": subject, "aliases": aliases, "note_aliases": aliases} in rows[nid]["entities"]
+    assert rows[only["id"]]["tags"] == "" and {"name": only_name, "aliases": [], "note_aliases": []} in rows[only["id"]]["entities"]
 
     if evidence := os.getenv("FIELD_EVIDENCE_DIR"):
         result = {"duplicate": {"id": nid, "created": repeated["created"], "statuses_before": before,

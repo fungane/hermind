@@ -354,12 +354,16 @@ def test_llm_failure_falls_back(pkg, tmp_path):
     p.shutdown()
 
 
-def test_llm_success_path(pkg, tmp_path):
+def test_llm_success_path(pkg, tmp_path, monkeypatch):
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    from hermind.llm import LLMClient
+
+    received_paths = []
 
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
+            received_paths.append(self.path)
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             prompt = body["messages"][0]["content"]
             text = ('["SystemD=system daemon"]' if "named entities" in prompt else
@@ -376,8 +380,19 @@ def test_llm_success_path(pkg, tmp_path):
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
+        # A reachable receiver distinguishes policy refusals from connection failures.
+        monkeypatch.setenv("HERMIND_TEST_MODEL_KEY", "fixture-key")
+        url = f"http://127.0.0.1:{srv.server_port}"
+        client = LLMClient({"base_url": url, "model": "stub", "pii": "block",
+                            "api_key_env": "HERMIND_TEST_MODEL_KEY"})
+        assert client.chat("password=FictionalFixture12345") is None
+        assert client.chat("Send to fixture@example.test") is None
+        assert received_paths == []
+        assert client.chat("Describe the backup plan.") == "Use restic (#1)."
+        assert received_paths == ["/chat/completions"]
+
         p = pkg.HermindProvider(config={"db_path": str(tmp_path / "l.db"), "llm": {
-            "enabled": True, "base_url": f"http://127.0.0.1:{srv.server_port}", "model": "m"}})
+            "enabled": True, "base_url": url, "model": "m"}})
         p.initialize("s", hermes_home=str(tmp_path))
         nid = json.loads(p.handle_tool_call("memory_remember", {"content": "備份用 restic", "keywords": "a b c d e"}))["id"]
         assert p._store.related("system daemon")["found"]
@@ -387,3 +402,4 @@ def test_llm_success_path(pkg, tmp_path):
         p.shutdown()
     finally:
         srv.shutdown()
+        srv.server_close()

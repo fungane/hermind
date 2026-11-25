@@ -283,7 +283,7 @@ def test_gen_field_weight_lower_than_keywords(store):
 # -- C. learning from use -----------------------------------------------------------------------------------------
 
 def _learning_provider(pkg, tmp_path, clock):
-    p = pkg.HermindProvider(config={"db_path": "$HERMES_HOME/dm.db", "consolidate_on_init": False})
+    p = pkg.HermindProvider(config={"learn_query_terms": True, "db_path": "$HERMES_HOME/dm.db", "consolidate_on_init": False})
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
     p._clock = lambda: clock[0]
     return p
@@ -414,7 +414,7 @@ def test_usage_log_and_report(tmp_path):
     assert r["searches"]["tool"] == {"count": 1, "zero_result": 0, "with_rewrites": 1}
     assert r["searches"]["auto"]["zero_result"] == 1
     assert r["feedback"] == {"helpful": 1}
-    assert r["recent_zero_result_queries"] == ["zzz nothing"]
+    assert r["recent_zero_result_queries"] == []
 
 
 def test_backfill_falls_back_to_second_model_and_records_it(backfill, store_mod, tmp_path):

@@ -198,7 +198,7 @@ def test_mcp_server_without_the_key_fails_with_a_clear_message(tmp_path, Store):
     assert r.returncode != 0 and "HERMIND_DB_KEY_FILE" in r.stderr
 
 
-def test_vector_worker_failure_leaves_a_log(tmp_path, pkg):
+def test_vector_worker_failure_reports_only_error_type(tmp_path, pkg, caplog):
     """A worker that cannot start (e.g. no sqlcipher3 in its venv) must not fail silently."""
     server = tmp_path / "bad_server.py"
     server.write_text("import sys\nsys.stderr.write('ModuleNotFoundError: No module named sqlcipher3\\n')\nsys.exit(1)\n")
@@ -209,5 +209,6 @@ def test_vector_worker_failure_leaves_a_log(tmp_path, pkg):
     vec = importlib.import_module("hermind.vec").VectorIndex({"python": sys.executable, "server": str(server), "model": str(model)}, str(db))
     assert vec._call({"op": "ping"}, timeout=5) is None
     log = tmp_path / "m.db.vec.log"
-    assert "sqlcipher3" in log.read_text() and oct(log.stat().st_mode & 0o777) == "0o600"
+    assert not log.exists() and "embedding worker unavailable" in caplog.text
+    assert "ModuleNotFoundError" not in caplog.text and "sqlcipher3" not in caplog.text
     vec.close()

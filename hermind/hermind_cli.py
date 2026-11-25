@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import uuid
 import time
 from pathlib import Path
 
@@ -161,6 +163,8 @@ def git_url() -> str:
 
 
 def plugin_version(plugin_dir: Path) -> str | None:
+    if plugin_dir.is_symlink() or (plugin_dir / "plugin.yaml").is_symlink():
+        return None
     try:
         m = re.search(r"^version:\s*(\S+)", (plugin_dir / "plugin.yaml").read_text(encoding="utf-8"), re.M)
     except OSError:
@@ -194,12 +198,12 @@ def db_state(path: Path) -> dict:
         return {**out, "state": "encrypted"}
     out["state"] = "plain"
     try:
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=3)
+        con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=3)
         out["schema"] = con.execute("PRAGMA user_version").fetchone()[0]
         out["notes"] = con.execute("SELECT count(*) FROM notes WHERE status='active'").fetchone()[0]
         con.close()
     except sqlite3.Error as exc:
-        out["error"] = str(exc)[:120]
+        out["error"] = type(exc).__name__
     return out
 
 
@@ -334,7 +338,7 @@ class _Server:
             return {}
         line = self.proc.stdout.readline()
         if not line:
-            raise RuntimeError("server closed: " + self.proc.stderr.read()[:300])
+            raise RuntimeError("server closed; check the database, runtime and configuration")
         return json.loads(line)
 
     def close(self) -> None:
@@ -462,11 +466,100 @@ def resolve_home(ns) -> Path:
     base = Path(os.environ["HERMES_HOME"]).expanduser() if os.environ.get("HERMES_HOME") else Path.home() / ".hermes"
     if ns.profile in (None, "default"):
         return base
+    if ns.profile in (".", "..") or "/" in ns.profile or chr(92) in ns.profile:
+        raise ValueError("profile must be a single directory name")
     return base / "profiles" / ns.profile
 
 
 def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@contextlib.contextmanager
+def _install_lock(home: Path):
+    # A stale lock after an interrupted install deliberately requires inspection of the backups.
+    lock = home / ".hermind-install.lock"
+    try:
+        lock.mkdir(mode=0o700)
+    except FileExistsError:
+        raise RuntimeError("Hermind install lock exists. Check for a running installer and inspect the plugin and backups before removing the lock.") from None
+    try:
+        yield
+    finally:
+        lock.rmdir()
+
+
+def _plugin_directories(home: Path) -> tuple[Path, Path]:
+    plugins, backups = home / "plugins", home / "backups"
+    for path in (plugins, backups):
+        if path.is_symlink():
+            raise RuntimeError("The plugins and backups directories must be real directories inside the selected Hermes home.")
+        path.mkdir(mode=0o700, exist_ok=True)
+    plugin = plugins / "hermind"
+    if plugin.is_symlink():
+        raise RuntimeError("The plugin is a symbolic link. Use its installation manager to upgrade it.")
+    return plugin, backups
+
+
+def _activate_plugin(stage: Path, plugin: Path, previous: Path) -> bool:
+    had_plugin = plugin.exists()
+    if had_plugin:
+        plugin.rename(previous)
+    try:
+        stage.rename(plugin)
+    except BaseException:
+        if had_plugin:
+            previous.rename(plugin)
+        raise
+    return had_plugin
+
+
+def _prepare_plugin(plugin: Path, stage: Path, files: list[str]) -> None:
+    if plugin.exists():
+        shutil.copytree(plugin, stage, symlinks=True, ignore=shutil.ignore_patterns("__pycache__"))
+    else:
+        stage.mkdir(mode=0o700)
+    tools = stage / "tools"
+    if tools.is_symlink():
+        raise RuntimeError("The existing plugin tools directory is a symbolic link. Review it before upgrading.")
+    tools.mkdir(exist_ok=True)
+    entries = [(runtime_source(f), stage / f) for f in files]
+    entries.extend((p, tools / p.name) for p in sorted((ROOT / "tools").iterdir()) if p.suffix in (".py", ".sh"))
+    for source, target in entries:
+        if target.is_symlink():
+            target.unlink()
+        shutil.copy2(source, target)
+        if sha(source) != sha(target):
+            raise RuntimeError("A staged runtime file failed its checksum.")
+        if target.suffix == ".py":
+            ast.parse(target.read_bytes())
+
+
+def _verify_install_db(db: Path, backups: Path, stage: Path, work: Path) -> tuple[Path, int]:
+    # The backup tool reads committed WAL data and retains SQLCipher encryption. Its output directory
+    # is empty so its retention policy cannot prune earlier backups during installation.
+    dest = backups / "db"
+    if dest.is_symlink():
+        raise RuntimeError("The database backup directory must be a real directory.")
+    dest.mkdir(mode=0o700, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest) as folder:
+        r = subprocess.run([sys.executable, str(ROOT / "tools" / "backup.py"), "--dest", folder, str(db)],
+                           capture_output=True, timeout=120)
+        copies = list(Path(folder).glob("*.db"))
+        if r.returncode or len(copies) != 1:
+            raise RuntimeError("Database backup failed. Check available space, the database driver and key configuration.")
+        verified_copy = work / "verify.db"
+        shutil.copyfile(copies[0], verified_copy)
+        verified_copy.chmod(0o600)
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); from store import DecisionStore; s = DecisionStore(sys.argv[2]); "
+                "n = s.conn.execute(\"SELECT count(*) FROM notes WHERE status='active'\").fetchone()[0]; s.close(); print(n)")
+        r = subprocess.run([sys.executable, "-I", "-c", code, str(stage), str(verified_copy)],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode or not r.stdout.strip().isdigit():
+            raise RuntimeError("The staged plugin could not open the backup copy. Check driver and schema compatibility.")
+        kept = dest / ("hermind-install-" + uuid.uuid4().hex + ".db")
+        copies[0].rename(kept)
+        return kept, int(r.stdout.strip())
 
 
 def install_hermes(ns) -> dict:
@@ -495,9 +588,8 @@ def install_hermes(ns) -> dict:
     if missing:
         res["error"] = "checkout is incomplete, missing: " + ", ".join(missing)
         return res
-    stamp = time.strftime("%Y%m%d-%H%M%S")
     backups = home / "backups"
-    plugin_backup = backups / f"hermind-plugin-{res['from_version'] or 'none'}-{stamp}"
+    plugin_backup = backups / f"hermind-plugin-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex}"
     db = default_db_file(home)
     state = db_state(db)
     res["db"] = state
@@ -505,65 +597,40 @@ def install_hermes(ns) -> dict:
     steps.append(f"back up database ({state['state']}) with tools/backup.py -> {backups / 'db'}" if state["state"] in ("plain", "encrypted")
                  else f"database is {state['state']}: no database backup needed")
     steps.append(f"copy {len(files)} runtime files and tools/ into {plugin}")
-    steps.append("verify: checksums equal to the source, syntax check, open a COPY of the database and search it")
+    steps.append("verify: checksums equal to the source, syntax check, open a verified online backup of the database")
     if ns.dry_run:
         res["ok"] = True
         res["next"] = ["re-run without --dry-run to apply"]
         return res
-    if plugin.exists():
-        backups.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(plugin, plugin_backup)
-        res["plugin_backup"] = str(plugin_backup)
-    if state["state"] in ("plain", "encrypted"):
-        r = subprocess.run([sys.executable, str(ROOT / "tools" / "backup.py"), "--dest", str(backups / "db"), str(db)],
-                           capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(ROOT)})
-        if r.returncode != 0:
-            res["error"] = "database backup failed, nothing was changed: " + (r.stdout + r.stderr).strip()[:300]
-            return res
-        res["db_backup"] = r.stdout.strip().splitlines()[-1][:300]
-    (plugin / "tools").mkdir(parents=True, exist_ok=True)
-    for f in files:
-        shutil.copy2(runtime_source(f), plugin / f)
-    for p in sorted((ROOT / "tools").iterdir()):
-        if p.suffix in (".py", ".sh"):
-            shutil.copy2(p, plugin / "tools" / p.name)
-    bad = [f for f in files if sha(runtime_source(f)) != sha(plugin / f)]
-    for f in ("__init__.py", "store.py", "pii.py", "dbdriver.py"):
-        try:
-            ast.parse((plugin / f).read_text(encoding="utf-8"))
-        except SyntaxError as exc:
-            bad.append(f"{f}: {exc}")
-    verify = {"files_identical": not bad}
-    if bad:
-        verify["mismatch"] = bad
-    if state["state"] in ("plain", "encrypted"):
-        work = Path(tempfile.mkdtemp(prefix="hermind-verify-"))
-        try:
-            copy = work / "hermind.db"
-            shutil.copy2(db, copy)
-            code = ("import sys; sys.path.insert(0, sys.argv[1]); from store import DecisionStore; s = DecisionStore(sys.argv[2]); "
-                    "n = s.conn.execute(\"SELECT count(*) FROM notes WHERE status='active'\").fetchone()[0]; "
-                    "s.search('test', limit=3); print(n)")
-            r = subprocess.run([sys.executable, "-c", code, str(plugin), str(copy)], capture_output=True, text=True, timeout=120)
-            verify["opens_database_copy"] = r.returncode == 0
-            if r.returncode == 0:
-                verify["active_notes"] = int(r.stdout.strip().splitlines()[-1])
-            else:
-                verify["error"] = (r.stderr.strip().splitlines() or ["?"])[-1][:300]
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-    res["verify"] = verify
-    res["ok"] = verify["files_identical"] and verify.get("opens_database_copy", True)
+    try:
+        with _install_lock(home):
+            plugin, backups = _plugin_directories(home)
+            with tempfile.TemporaryDirectory(prefix=".hermind-stage-", dir=home) as folder:
+                work = Path(folder)
+                stage = work / "plugin"
+                _prepare_plugin(plugin, stage, files)
+                verify = {"files_identical": True}
+                if state["state"] in ("plain", "encrypted"):
+                    backup, count = _verify_install_db(db, backups, stage, work)
+                    res["db_backup"] = str(backup)
+                    verify.update(opens_database_copy=True, active_notes=count)
+                if _activate_plugin(stage, plugin, plugin_backup):
+                    res["plugin_backup"] = str(plugin_backup)
+                res.update(ok=True, verify=verify)
+    except RuntimeError as exc:
+        res["error"] = str(exc)
+        return res
+    except (OSError, SyntaxError, ValueError, subprocess.SubprocessError) as exc:
+        res["error"] = f"Install failed ({type(exc).__name__}). Inspect the plugins and backups directories before retrying."
+        return res
     res["next"] = [
         "restart the Hermes gateway and the desktop app so the new code loads (this command does not restart anything)",
         "if this profile does not use Hermind yet: hermes config set memory.provider hermind",
         "after the restart, check the log for \"Memory provider 'hermind' activated\"",
     ]
     if res.get("plugin_backup"):
-        res["rollback"] = f"python3 hermind_cli.py install-hermes --rollback {plugin_backup}" + (
-            f" --profile {ns.profile}" if ns.profile not in (None, "default") else "") + (f" --hermes-home {ns.hermes_home}" if ns.hermes_home else "")
-    if not res["ok"]:
-        res["error"] = "verification failed; the previous plugin is in plugin_backup (use the rollback command)"
+        args = ["python3", "hermind_cli.py", "install-hermes", "--rollback", str(plugin_backup), "--hermes-home", str(home)]
+        res["rollback"] = " ".join(shell_quote(arg) for arg in args)
     return res
 
 
@@ -573,20 +640,27 @@ def rollback_hermes(ns) -> dict:
     res: dict = {"ok": False, "hermes_home": str(home)}
     choice = Path(ns.rollback).expanduser() if ns.rollback and ns.rollback is not True else None
     if choice is None:
-        found = sorted((home / "backups").glob("hermind-plugin-*"))
+        found = sorted((p for p in (home / "backups").glob("hermind-plugin-*") if p.is_dir() and not p.is_symlink()),
+                       key=lambda p: p.stat().st_ctime_ns)
         choice = found[-1] if found else None
-    if choice is None or not (choice / "plugin.yaml").exists():
+    if choice is None or choice.is_symlink() or (choice / "plugin.yaml").is_symlink() or not (choice / "plugin.yaml").is_file():
         res["error"] = "no plugin backup found (looked in " + str(home / "backups") + ")"
         return res
-    aside = plugin.with_name(f"hermind.replaced-{time.strftime('%Y%m%d-%H%M%S')}")
-    n = 1
-    while aside.exists():                         # two rollbacks within one second
-        aside = plugin.with_name(f"hermind.replaced-{time.strftime('%Y%m%d-%H%M%S')}-{n}")
-        n += 1
-    if plugin.exists():
-        plugin.rename(aside)
-        res["replaced_kept_at"] = str(aside)
-    shutil.copytree(choice, plugin)
+    try:
+        with _install_lock(home):
+            plugin, backups = _plugin_directories(home)
+            aside = backups / f"hermind-replaced-{uuid.uuid4().hex}"
+            with tempfile.TemporaryDirectory(prefix=".hermind-restore-", dir=home) as folder:
+                stage = Path(folder) / "plugin"
+                shutil.copytree(choice, stage, symlinks=True)
+                if _activate_plugin(stage, plugin, aside):
+                    res["replaced_kept_at"] = str(aside)
+    except RuntimeError as exc:
+        res["error"] = str(exc)
+        return res
+    except OSError as exc:
+        res["error"] = f"Restore failed ({type(exc).__name__}). Inspect the plugins and backups directories before retrying."
+        return res
     res.update(ok=True, restored_from=str(choice), restored_version=plugin_version(plugin),
                next=["restart the Hermes gateway and the desktop app"])
     return res
@@ -744,6 +818,8 @@ def config_cmd(ns) -> tuple[dict, int]:
     if client not in CLIENTS:
         return {"error": f"unknown client '{ns.client}'", "clients": CLIENTS}, 2
     env: dict = {}
+    if ns.remote and (ns.remote.startswith("-") or any(c.isspace() or ord(c) < 32 for c in ns.remote)):
+        return {"error": "--remote expects an SSH host or user@host"}, 2
     if ns.remote and (ns.db_from_profile or ns.source != "git"):
         return {"error": "--remote runs the server on the other machine: use --remote-hermes-profile / --db / --key-file "
                          "(paths on THAT machine) instead of --db-from-profile / --source"}, 2
@@ -819,7 +895,7 @@ def authorize_key(ns) -> dict:
         r = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", ns.comment or "hermind-mcp", "-f", str(key)],
                            capture_output=True, text=True)
         if r.returncode != 0:
-            res["error"] = "ssh-keygen failed: " + r.stderr.strip()[:200]
+            res["error"] = "ssh-keygen failed; check the destination permissions and installed SSH tools"
             return res
         pub = Path(str(key) + ".pub").read_text().strip()
         res["private_key"] = str(key)
@@ -830,9 +906,14 @@ def authorize_key(ns) -> dict:
         except OSError as exc:
             res["error"] = f"cannot read {ns.pubkey}: {exc.strerror}"
             return res
+    if pub and any(ord(c) < 32 or ord(c) == 127 for c in pub):
+        return {"ok": False, "error": "use one printable SSH public key line"}
     if not pub or not re.match(r"^(ssh-ed25519|ssh-rsa|ecdsa-sha2-\S+|sk-\S+) [A-Za-z0-9+/=]+( .*)?$", pub) or "\n" in pub:
         res["error"] = "need one public key line (ssh-ed25519 AAAA... comment): use --pubkey FILE.pub or --generate FILE"
         return res
+    if any(any(ord(c) < 32 or ord(c) == 127 for c in str(value or ""))
+           for value in (ns.db, ns.checkout, ns.profile, ns.python)):
+        return {"ok": False, "error": "SSH command fields must fit on one line"}
     if ns.db:
         db = Path(ns.db).expanduser()
     else:
@@ -922,7 +1003,7 @@ def _ids(text: str) -> list[int]:
             continue
         m = re.fullmatch(r"#?(\d+)", item)
         if not m or not 1 <= int(m.group(1)) < 2 ** 63:
-            raise ValueError(f"{item!r} is not a note id (use positive whole numbers separated by commas or spaces, like 12,15)")
+            raise ValueError("input is not a note id (use positive whole numbers separated by commas or spaces, like 12,15)")
         out.append(int(m.group(1)))
     return out
 
@@ -1006,7 +1087,7 @@ def audit_db(ns) -> dict:
             con = dbdriver.connect(str(db))
             con.execute("PRAGMA query_only = ON")
     except Exception as exc:
-        return {"ok": False, "error": f"cannot open {db}: {type(exc).__name__}: {str(exc)[:160]}"}
+        return {"ok": False, "error": f"cannot open {db}: {type(exc).__name__}; check permissions, key and format"}
     findings, counts, total = [], {}, 0
     entity_findings: list[dict] = []
     n_entities = 0
@@ -1040,7 +1121,7 @@ def audit_db(ns) -> dict:
                 item["excerpt"] = redact_pii(content or "")[0][:ns.chars]
             findings.append(item)
     except sqlite3.Error as exc:       # a truncated or damaged file, or a SQLite file that is not a Hermind database
-        return {"ok": False, "error": f"cannot read {db}: {type(exc).__name__}: {str(exc)[:160]}"}
+        return {"ok": False, "error": f"cannot read {db}: {type(exc).__name__}; check permissions, key and format"}
     finally:
         con.close()
     res = {"ok": True, "database": str(db), "notes_scanned": total, "flagged": len(findings), "by_type": counts,
@@ -1097,7 +1178,7 @@ def _read_session_map(path: str) -> tuple[dict | None, str | None]:
     try:
         data = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError) as exc:
-        return None, f"{path} is not valid JSON ({type(exc).__name__}: {str(exc)[:100]})"
+        return None, f"{path} is not valid JSON ({type(exc).__name__}); check the JSON syntax"
     if not isinstance(data, dict):
         return None, f"{path} must be a JSON object of the form {{\"<session id>\": \"<working directory>\", ...}}, not {type(data).__name__}"
     bad = [k for k, v in data.items() if not isinstance(v, str)]
@@ -1185,12 +1266,12 @@ def import_projects(ns) -> dict:
     try:
         con = _open_read_only(db)
     except Exception as exc:
-        return {"ok": False, "error": f"cannot open {db}: {type(exc).__name__}: {str(exc)[:160]}"}
+        return {"ok": False, "error": f"cannot open {db}: {type(exc).__name__}; check permissions, key and format"}
     try:
         plan = _plan_projects(con, mapping)
         schema = con.execute("PRAGMA user_version").fetchone()[0]
     except sqlite3.Error as exc:
-        return {"ok": False, "error": f"cannot read {db}: {type(exc).__name__}: {str(exc)[:160]}"}
+        return {"ok": False, "error": f"cannot read {db}: {type(exc).__name__}; check permissions, key and format"}
     finally:
         con.close()
     updates = plan.pop("_updates")
@@ -1228,7 +1309,7 @@ def import_projects(ns) -> dict:
         finally:
             store.close()
     except Exception as exc:
-        return {"ok": False, "error": f"cannot write to {db}: {type(exc).__name__}: {str(exc)[:160]} (the backup copy is {made.path})"}
+        return {"ok": False, "error": f"cannot write to {db}: {type(exc).__name__}; check permissions, key and format (the backup copy is {made.path})"}
     return res
 
 
@@ -1278,7 +1359,7 @@ def default_source() -> str:
     return "pipx" if shutil.which("hermind-hook", path=_path_without_own_bin()) else "git"
 
 
-def hook_command(ns, db: str | None, windows: bool | None = None) -> str:
+def _hook_argv(ns, db):
     if ns.source == "pipx":
         parts = ["hermind-hook"]
     elif ns.source == "git":
@@ -1287,7 +1368,11 @@ def hook_command(ns, db: str | None, windows: bool | None = None) -> str:
         parts = [sys.executable, str(ROOT / "hermind_hook.py")]
     if db:
         parts += ["--db", db]
-    return " ".join(shell_quote(p, windows) for p in parts)
+    return parts
+
+
+def hook_command(ns, db: str | None, windows: bool | None = None) -> str:
+    return " ".join(shell_quote(p, windows) for p in _hook_argv(ns, db))
 
 
 def install_hook(ns) -> dict:
@@ -1327,18 +1412,29 @@ def install_hook(ns) -> dict:
                  "replaced_existing_entries": removed, "written": False}
     if not ns.remove:
         res["snippet"] = json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": cmd, "timeout": ns.timeout}]}]}}, indent=2)
-        res["probe"] = _probe_hook(cmd)
+        res["probe"] = _probe_hook(_hook_argv(ns, db))
     if ns.write:
         if settings.exists():
-            backup = settings.with_name(settings.name + time.strftime(".bak-hermind-%Y%m%d-%H%M%S-") + f"{int(time.time() * 1000) % 1000:03d}")
-            shutil.copy2(settings, backup)
-            os.chmod(backup, 0o600)
+            with tempfile.NamedTemporaryFile(dir=settings.parent, prefix=settings.name + ".bak-hermind-"
+                                             + f"{time.time_ns():020d}-", delete=False) as saved:
+                backup = Path(saved.name)
+                with settings.open("rb") as original:
+                    shutil.copyfileobj(original, saved)
             res["backup"] = str(backup)
         settings.parent.mkdir(parents=True, exist_ok=True)
-        tmp = settings.with_name(settings.name + ".hermind-tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.chmod(tmp, 0o600 if not settings.exists() else (settings.stat().st_mode & 0o777))
-        os.replace(tmp, settings)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=settings.parent,
+                                         prefix=".hermind-settings-", delete=False) as output:
+            tmp = Path(output.name)
+            try:
+                json.dump(data, output, indent=2, ensure_ascii=False)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+                output.close()
+                os.chmod(tmp, 0o600 if not settings.exists() else (settings.stat().st_mode & 0o777))
+                os.replace(tmp, settings)
+            finally:
+                tmp.unlink(missing_ok=True)
         res["written"] = True
         res["next"] = ("restart Claude Code so it stops using the hook" if ns.remove else
                        "restart Claude Code (or open /hooks) so it reads the new setting; undo with `hermind install-hook --remove --write`")
@@ -1347,15 +1443,17 @@ def install_hook(ns) -> dict:
     return res
 
 
-def _probe_hook(cmd: str) -> dict:
+def _probe_hook(cmd: list[str]) -> dict:
     """Run the hook once on a harmless prompt, the way Claude Code does, and report what happened."""
     t0 = time.time()
     try:
-        r = subprocess.run(cmd, shell=True, input=json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "what do you remember about hermind"}),
+        r = subprocess.run(cmd, input=json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "what do you remember about hermind"}),
                            capture_output=True, text=True, timeout=30,
                            env={**os.environ, "PATH": _path_without_own_bin()})   # as Claude Code would start it
     except subprocess.TimeoutExpired:
         return {"ran": False, "problem": "timed out after 30 s"}
+    except OSError as exc:
+        return {"ran": False, "problem": f"hook could not start ({type(exc).__name__}); check the installed command"}
     ms = int((time.time() - t0) * 1000)
     out = r.stdout.strip()
     ok_json = False
@@ -1369,7 +1467,7 @@ def _probe_hook(cmd: str) -> dict:
     return {"ran": r.returncode == 0, "exit_code": r.returncode, "milliseconds": ms, "returned_valid_context": ok_json,
             "notes_in_context": notes,
             "note": "no notes matched the probe prompt (normal for an empty or unrelated database)" if r.returncode == 0 and not out else "",
-            **({"problem": (r.stderr.strip().splitlines() or ["no output"])[-1][:300]} if r.returncode else {})}
+            **({"problem": "hook exited unsuccessfully; check the installed command and its configuration"} if r.returncode else {})}
 
 
 def install_hook_text(d: dict) -> str:
@@ -1524,9 +1622,43 @@ def note_cmd(ns) -> dict:
         if type(e).__name__ != "EncryptionError":
             raise
         return {"ok": False, "error": str(e)}
+    except ValueError:
+        return {"ok": False, "error": "cannot open database; check path, permissions and schema"}
     except (OSError, sqlite3.Error) as e:
         what = getattr(e, "filename", None) or str(_mcp_db(ns))
         return {"ok": False, "error": f"cannot use {what}: {e.strerror if isinstance(e, OSError) and e.strerror else e}"}
+
+
+def privacy_cleanup(ns):
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from store import DecisionStore, FIELD_LEARNED
+    path = Path(ns.db).expanduser()
+    if not path.is_file():
+        return {"ok": False, "error": "choose an existing Hermind database"}
+    try:
+        store = DecisionStore(str(path), readonly=not ns.apply)
+        try:
+            con = store.conn
+            with con:
+                if ns.apply:
+                    con.execute("BEGIN IMMEDIATE")
+                have_log = con.execute("SELECT 1 FROM sqlite_master WHERE name='usage_log'").fetchone()
+                rows = con.execute("SELECT count(*) FROM usage_log WHERE query!=''").fetchone()[0] if have_log else 0
+                pending = con.execute("SELECT count(*) FROM learn_pending").fetchone()[0]
+                learned = con.execute("SELECT count(*) FROM notes WHERE learned_terms!=''").fetchone()[0]
+                if ns.apply:
+                    if have_log:
+                        con.execute("UPDATE usage_log SET query='' WHERE query!=''")
+                    con.execute("DELETE FROM learn_pending")
+                    con.execute("DELETE FROM postings WHERE field=?", (FIELD_LEARNED,))
+                    con.execute("UPDATE notes SET learned_terms='' WHERE learned_terms!=''")
+                return {"ok": True, "applied": ns.apply, "query_rows": rows,
+                        "pending_terms": pending, "notes_with_learned_terms": learned}
+        finally:
+            store.close()
+    except Exception as exc:
+        return {"ok": False, "error": f"cleanup failed ({type(exc).__name__}); check database version, key and permissions"}
 
 
 def _note_cmd(ns) -> dict:
@@ -1540,7 +1672,7 @@ def _note_cmd(ns) -> dict:
     if not db.parent.exists():                     # a folder made here is the owner's only, as DecisionStore makes it
         db.parent.mkdir(parents=True, mode=0o700)
         os.chmod(db.parent, 0o700)
-    store = DecisionStore(str(db))
+    store = DecisionStore(str(db), readonly=ns.cmd != "remember")
     try:
         if ns.cmd == "remember":
             try:
@@ -1600,6 +1732,8 @@ def import_cmd(ns) -> dict:
         if type(e).__name__ != "EncryptionError":
             raise
         return {"ok": False, "error": str(e)}
+    except ValueError:
+        return {"ok": False, "error": "cannot open database; check path, permissions and schema"}
     except (OSError, sqlite3.Error) as e:
         what = getattr(e, "filename", None) or str(_mcp_db(ns))
         return {"ok": False, "error": f"cannot use {what}: {e.strerror if isinstance(e, OSError) and e.strerror else e}"}
@@ -1773,6 +1907,10 @@ def _main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="hermind", description=__doc__.split("\n\n")[0])
     p.add_argument("--version", action="store_true")
     sub = p.add_subparsers(dest="cmd")
+    cleanup = sub.add_parser("privacy-cleanup", help="count legacy query text and derived search terms")
+    cleanup.add_argument("--db", required=True)
+    cleanup.add_argument("--apply", action="store_true", help="remove these fields in one transaction")
+    cleanup.add_argument("--json", action="store_true")
     for name in ("doctor", "selftest"):
         s = sub.add_parser(name)
         s.add_argument("--json", action="store_true")
@@ -1931,6 +2069,9 @@ def _main(argv=None) -> int:
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--json", action="store_true")
     ns = p.parse_args(argv)
+    profile = getattr(ns, "profile", None)
+    if profile and (profile in (".", "..") or any(char in profile for char in ("/", "\\", "\x00"))):
+        p.error("profile must be a single directory name")
     if ns.version:
         print(f"hermind {version()}")
         return 0
@@ -1963,6 +2104,10 @@ def _main(argv=None) -> int:
     if ns.cmd == "review":
         d = review_cmd(ns)
         emit(d, ns.json, review_text)
+        return 0 if d["ok"] else 2
+    if ns.cmd == "privacy-cleanup":
+        d = privacy_cleanup(ns)
+        print(json.dumps(d, indent=2))
         return 0 if d["ok"] else 2
     if ns.cmd == "audit-db":
         d = audit_db(ns)

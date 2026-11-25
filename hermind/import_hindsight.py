@@ -17,12 +17,14 @@ import os
 import re
 import sys
 import time
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from store import DecisionStore, RefusedWrite  # noqa: E402
+from screen import strip_private_label
 from textnorm import classify_kind  # noqa: E402
 
 RE_SESSION_DOC = re.compile(r"^\d{8}_\d{6}_[0-9a-f]+$")
@@ -35,7 +37,7 @@ def classify(item: dict) -> str:
 
 
 def parse_date(value: str | None) -> float | None:
-    if not value:
+    if not isinstance(value, str) or not value:
         return None
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
@@ -64,22 +66,30 @@ def _proof_count(item: dict) -> int:
         return 1
 
 
-def _remove_db(path: str) -> None:
-    for suffix in ("", "-wal", "-shm"):
-        if os.path.exists(path + suffix):
-            os.remove(path + suffix)
-
-
 def run(src: str, dst: str, consolidate: bool = True, observations: bool = True) -> dict:
     """Build the DB next to *dst* and swap it in only when the import finished, so a crash (or a malformed export)
     never destroys an existing *dst*."""
-    items = json.loads(Path(src).read_text(encoding="utf-8"))
+    with open(src, "rb") as source:
+        data = source.read(64 * 1024**2 + 1)
+    if len(data) > 64 * 1024**2:
+        raise ValueError("file exceeds 64 MiB; split the input")
+    items = json.loads(data.decode("utf-8-sig"))
     if isinstance(items, dict):            # raw API page(s): {"items": [...]}
         items = items.get("items") or []
     if not isinstance(items, list):
         raise ValueError("export must be a JSON list (or {'items': [...]})")
-    tmp = dst + ".importing"
-    _remove_db(tmp)
+    dest = Path(dst)
+    dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest.parent, prefix=".hermind-import-") as staging:
+        tmp = str(Path(staging) / "new.db")
+        out = _build(items, tmp, consolidate, observations)
+        if dest.is_symlink() or any(os.path.lexists(str(dest) + side) for side in ("-wal", "-shm", "-journal")):
+            raise ValueError("choose a regular, offline destination and close existing database users")
+        os.replace(tmp, dest)
+        return out
+
+
+def _build(items, tmp, consolidate, observations):
     t0 = time.time()
     store = DecisionStore(tmp)
     try:
@@ -96,6 +106,12 @@ def run(src: str, dst: str, consolidate: bool = True, observations: bool = True)
                 continue
             # Hindsight's consolidated 'observations' become kind='summary' (locked, ranked a little higher): measured
             # +1..2 of 30 questions without hurting anything, so they are imported by default.
+            item = {**item, "text": strip_private_label(str(item["text"])),
+                    "document_id": strip_private_label(str(item.get("document_id") or "")),
+                    "entities": [strip_private_label(e) for e in item_entities(item)]}
+            if not item["text"].strip():
+                refused += 1
+                continue
             kind = "summary" if ft == "observation" else classify(item)
             try:
                 # TTLs (news 14 d, chat 90 d) count from import time: the source dates are history, not freshness.
@@ -122,18 +138,8 @@ def run(src: str, dst: str, consolidate: bool = True, observations: bool = True)
         out = {"imported": sum(counts.values()), "by_kind": counts, "skipped": skipped, "refused": refused,
                "duplicates": dupes, "graph": graph, "consolidation": cons,
                "active_by_kind": store.stats()["active_by_kind"], "seconds": round(time.time() - t0, 2)}
+    finally:
         store.close()
-    except BaseException:
-        try:
-            store.close()
-        finally:
-            _remove_db(tmp)               # dst is untouched
-        raise
-    for suffix in ("-wal", "-shm"):       # stale sidecars of the DB being replaced / leftovers of the temp DB
-        for base in (dst, tmp):
-            if os.path.exists(base + suffix):
-                os.remove(base + suffix)
-    os.replace(tmp, dst)
     return out
 
 

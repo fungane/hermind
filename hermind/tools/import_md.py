@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -42,6 +43,7 @@ import md_notes as mdnotes  # noqa: E402  (md_notes.py in the repository root)
 import import_core  # noqa: E402
 from import_readers import md_entry  # noqa: E402
 from store import DecisionStore, RefusedWrite  # noqa: E402
+import md_export
 from store_writes import FORGOTTEN_REFUSAL, check_text, screen_fields  # noqa: E402
 
 
@@ -59,12 +61,12 @@ def find_files(root: Path) -> list[Path]:
 _day10 = mdnotes.day10
 
 
-def check_update(store: DecisionStore, f: dict, changed) -> None:
+def check_update(store: DecisionStore, f: dict, changed, scope=None) -> None:
     """The store's refusals for an edited-back note (text, keywords, forgotten text, credential-like tags), raised before
     anything is written: the plan and the apply step ask the same question, so a refusal leaves the note unchanged."""
     if "content" in changed or "keywords" in changed:
         check_text(f["content"], f["keywords"])
-        if store.is_forgotten(f["content"]):
+        if store.is_forgotten(f["content"], scope):
             raise RefusedWrite(FORGOTTEN_REFUSAL)
     if "tags" in changed:
         screen_fields(f["tags"])
@@ -74,7 +76,15 @@ def plan_file(path: Path, root: Path, store: DecisionStore, seen: set, force: bo
     rel = path.relative_to(root).as_posix()
     item = {"path": path, "rel": rel, "action": "skip", "why": ""}
     try:
-        text, why = mdnotes.decode_text(path.read_bytes(), encoding)
+        with md_export.directory(path.parent) as fd:
+            source = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            with os.fdopen(source, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(source).st_mode):
+                    return {**item, "action": "invalid", "why": "expected a regular file"}
+                data = handle.read(64 * 1024**2 + 1)
+        if len(data) > 64 * 1024**2:
+            return {**item, "action": "invalid", "why": "file exceeds 64 MiB; split the input"}
+        text, why = mdnotes.decode_text(data, encoding)
     except OSError as exc:
         return {**item, "action": "invalid", "why": f"unreadable ({exc.strerror or exc})"}
     if text is None:
@@ -82,7 +92,7 @@ def plan_file(path: Path, root: Path, store: DecisionStore, seen: set, force: bo
     meta, body = mdnotes.parse_note_file(text)
     nid = meta.get("id")
     if nid is not None and not (isinstance(nid, int) and not isinstance(nid, bool)):
-        return {**item, "action": "invalid", "why": f"id is not a number: {nid!r}"}
+        return {**item, "action": "invalid", "why": "id must be a whole number"}
     try:
         norm = {k: _day10(meta[k]) for k in ("valid_from", "valid_to") if k in meta}
         bad_dates = None
@@ -115,7 +125,7 @@ def plan_file(path: Path, root: Path, store: DecisionStore, seen: set, force: bo
         return {**item, "action": "conflict", "id": nid, "changed": changed,
                 "why": "edited in the file and changed in the database since the export (--force: file wins)"}
     try:                                                   # the update would be refused: say so now, not at --apply
-        check_update(store, f, changed)
+        check_update(store, f, changed, note["scope"])
     except (RefusedWrite, ValueError) as exc:
         return {**item, "action": "refused", "why": str(exc)}
     return {**item, "action": "update", "id": nid, "changed": changed, "fields": f, "note": note}
@@ -125,7 +135,7 @@ def apply_item(store: DecisionStore, item: dict, stamp: bool) -> tuple[str, str]
     """Perform one planned change; returns (outcome, detail)."""
     if item["action"] == "update":
         f, nid, changed = item["fields"], item["id"], item["changed"]
-        check_update(store, f, changed)                    # all refusals first: a refused edit changes nothing
+        check_update(store, f, changed, item["note"]["scope"])     # all refusals first: a refused edit changes nothing
         if "content" in changed or "keywords" in changed:
             store.update(nid, f["content"], f["keywords"])
         meta_kw = {}
@@ -143,7 +153,8 @@ def apply_item(store: DecisionStore, item: dict, stamp: bool) -> tuple[str, str]
         if "pending" in changed and not f["pending"]:
             store.confirm(nid)
         fresh = store.get(nid)       # keep the folder in sync: rewrite this file from the database (new rev, validity)
-        item["path"].write_text(mdnotes.render(fresh, mdnotes.link_meta(store.conn, fresh)), encoding="utf-8")
+        with md_export.directory(item["path"].parent) as directory_fd:
+            md_export.write_at(directory_fd, item["path"].name, mdnotes.render(fresh, mdnotes.link_meta(store.conn, fresh)), force=True)
         return "updated", ""
     p = item["plan"]
     nid, created = store.add(p.content, kind=p.kind, keywords=p.keywords, tags=p.tags, valid_from=p.valid_from,
@@ -154,7 +165,8 @@ def apply_item(store: DecisionStore, item: dict, stamp: bool) -> tuple[str, str]
         store.set_fields(nid, trust=p.trust)
     if stamp:       # the file becomes a canonical export file of the new note (id, rev, ...)
         fresh = store.get(nid)
-        item["path"].write_text(mdnotes.render(fresh, mdnotes.link_meta(store.conn, fresh)), encoding="utf-8")
+        with md_export.directory(item["path"].parent) as directory_fd:
+            md_export.write_at(directory_fd, item["path"].name, mdnotes.render(fresh, mdnotes.link_meta(store.conn, fresh)), force=True)
     return "created", f"#{nid}"
 
 

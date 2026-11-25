@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from store import DecisionStore, KINDS, l0, numbers  # noqa: E402
-from screen import looks_secret  # noqa: E402
+from screen import looks_secret, strip_private_label  # noqa: E402
 
 BATCH = 10            # recent notes per LLM call
 RELATED = 3           # older similar notes shown with each recent note, for context
@@ -79,20 +79,24 @@ def collect(store: DecisionStore, since_hours: float, limit: int, now: float) ->
 
 def related_notes(store: DecisionStore, note: dict, now: float) -> list[dict]:
     from store import core_text
-    hits = store.search(core_text(note["content"])[:300], limit=RELATED + 2, now=now, track=False, scope="*")
-    return [h for h in hits if h["id"] != note["id"] and h["created_at"] <= note["created_at"]][:RELATED]
+    hits = store.search(core_text(note["content"])[:300], limit=RELATED + 2, now=now, track=False, scope=note.get("scope"))
+    return [h for h in hits if h.get("scope") == note.get("scope") and h["id"] != note["id"] and h["created_at"] <= note["created_at"]][:RELATED]
 
 
 def render_note(n: dict) -> str:
-    text = " ".join(n["content"].split())[:NOTE_CHARS]
+    public = strip_private_label(n["content"])
+    text = "[REDACTED]" if looks_secret(public) else " ".join(public.split())[:NOTE_CHARS]
     return f"{n['id']} | {n['kind']} | {day(n['created_at'])} | {text}"
 
 
 def build_batches(store: DecisionStore, recent: list[dict], now: float) -> list[tuple[str, dict]]:
     """[(prompt text, {id: note})] - one entry per LLM call; the dict is every note the model may name."""
     batches = []
-    for i in range(0, len(recent), BATCH):
-        chunk = recent[i:i + BATCH]
+    groups = {}
+    for note in recent:
+        groups.setdefault(note.get("scope"), []).append(note)
+    chunks = (group[i:i + BATCH] for group in groups.values() for i in range(0, len(group), BATCH))
+    for chunk in chunks:
         known = {n["id"]: n for n in chunk}
         older: dict[int, dict] = {}
         for n in chunk:
@@ -183,7 +187,10 @@ def validate(raw: dict, known: dict[int, dict], recent_ids: set[int], store: Dec
         allowed = set().union(*(numbers(known[i]["content"]) for i in srcs))
         if any(x not in allowed for x in numbers(text)):
             refuse("aggregates", item, "contains a figure no source has"); continue
-        if store.is_forgotten(text):
+        scopes = {known[i].get("scope") for i in srcs}
+        if len(scopes) != 1:
+            refuse("aggregates", item, "different scopes"); continue
+        if store.is_forgotten(text, scopes.pop()):
             refuse("aggregates", item, "forgotten earlier"); continue
         if any(x["similarity"] >= 0.85 for x in store.write_check(text)["similar"]):
             refuse("aggregates", item, "already stored"); continue
@@ -249,11 +256,15 @@ def apply_plan(store: DecisionStore, plan: dict, now: float, max_apply: int, tag
             done["skipped_over_limit"] += 1; continue
         budget -= 1
         cited = " ".join(f"#{i}" for i in a["sources"])
+        scopes = {(store.get(i) or {}).get("scope") for i in a["sources"]}
+        if len(scopes) != 1 or None in scopes:
+            done["failed"].append(("aggregate", "sources unavailable in one scope"))
+            continue
         try:
             nid, created = store.add(f"{a['text']} (綜合 {cited})", kind=a["kind"], review="pending", tags="sleep-consolidate",
-                                     source_session=tag, proof_count=1, dedup_threshold=0.85)
+                                     scope=scopes.pop(), source_session=tag, proof_count=1, dedup_threshold=0.85)
         except ValueError as exc:      # RefusedWrite is a ValueError: forgotten / secret
-            done["failed"].append(("aggregate", str(exc)[:60])); continue
+            done["failed"].append(("aggregate", type(exc).__name__)); continue
         if created:
             done["aggregates"].append(nid)
         else:

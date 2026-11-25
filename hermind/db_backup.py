@@ -12,6 +12,7 @@ library only.
 from __future__ import annotations
 
 import contextlib
+import glob
 import os
 import re
 import time
@@ -34,20 +35,7 @@ class Backup:
     removed: int = 0          # older copies of the same kind that were deleted to keep only the newest ones
 
 
-_STAMP_END = re.compile(r"(\d{8}-\d{6})(?:-(\d+))?$")
 _SEQ_WIDTH = 3
-
-
-def _order_key(p: Path):
-    """Backups sort in the order they were made: UTC-free local stamp, then the counter for copies made in the same
-    second. Names that do not end in a stamp (made by hand) sort first, among themselves by modification time."""
-    m = _STAMP_END.search(p.name)
-    if m:
-        return (1, m.group(1), int(m.group(2) or 0), 0.0)
-    try:
-        return (0, "", 0, p.stat().st_mtime)
-    except OSError:
-        return (0, "", 0, 0.0)
 
 
 def _reserve(db: Path, prefix: str, now: float) -> Path:
@@ -55,8 +43,9 @@ def _reserve(db: Path, prefix: str, now: float) -> Path:
     ``<db>.<prefix>-<YYYYmmdd-HHMMSS>-<NNN>``. The counter continues after the highest one already used in that second
     (a pruned copy's number is never reused), so copies made in one second still sort in the order they were made."""
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
-    seen = [int(m.group(1)) for p in db.parent.glob(f"{db.name}.{prefix}-{stamp}-*")
-            if (m := re.search(r"-(\d+)$", p.name))]
+    base = f"{db.name}.{prefix}-{stamp}-"
+    seen = [int(seq) for p in db.parent.glob(glob.escape(base) + "*")
+            if re.fullmatch(r"[0-9]{3}", seq := p.name[len(base):])]
     for seq in range(max(seen, default=0) + 1, 10 ** _SEQ_WIDTH):
         dst = db.with_name(f"{db.name}.{prefix}-{stamp}-{seq:0{_SEQ_WIDTH}d}")
         try:
@@ -106,7 +95,7 @@ def backup_database(db: Path | str, *, prefix: str = "bak-import", keep: int = 5
         _copy(a, b)
         verdict = _integrity(b)
         if verdict != "ok":
-            raise BackupError(f"the copy of {db.name} failed its integrity check: {verdict}")
+            raise BackupError("the backup copy failed its integrity check")
         b.close()
         b = None
         os.chmod(dst, 0o600)
@@ -130,10 +119,19 @@ def backup_database(db: Path | str, *, prefix: str = "bak-import", keep: int = 5
         for side in ("-wal", "-shm"):
             Path(str(dst) + side).unlink(missing_ok=True)
     removed = 0
-    olds = sorted((p for p in db.parent.glob(prune_glob or f"{db.name}.{prefix}-*") if p != dst and p.is_file()),
-                  key=_order_key)
+    # Migrations retain copies across schema versions. Only rotate names Hermind
+    # generates, including the original timestamp-only format.
+    family = r"bak-v[0-9]+" if re.fullmatch(r"bak-v[0-9]+", prefix) else re.escape(prefix)
+    pattern = re.compile(re.escape(db.name) + r"\." + family + r"-([0-9]{8}-[0-9]{6})(?:-([0-9]{3}))?")
+    candidates = db.parent.glob(prune_glob or f"{glob.escape(db.name)}.{glob.escape(prefix)}-*")
+    olds = []
+    for path in candidates:
+        match = pattern.fullmatch(path.name)
+        if match and path != dst and not path.is_symlink() and path.is_file():
+            olds.append((match[1], int(match[2] or 0), path))
+    olds.sort()
     keep = max(1, keep)
-    for stale in olds[:max(0, len(olds) + 1 - keep)]:    # +1: the copy just made counts among the kept ones
+    for _, _, stale in olds[:max(0, len(olds) + 1 - keep)]:    # include the new copy in the limit
         try:
             stale.unlink()
             removed += 1

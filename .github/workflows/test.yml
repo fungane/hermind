@@ -2,8 +2,10 @@ name: tests
 # Linux and macOS must pass. Windows is informational: some POSIX assumptions remain (see docs/limitations.md).
 on:
   push:
-    branches: [main]
+    branches: [main, 'security/**']
     tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -37,7 +39,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install pytest pyyaml
-      - run: python -m pytest -q
+      - name: Install the optional encryption driver
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          python -m pip install --only-binary=:all: sqlcipher3==0.6.5
+          python -c "import sqlcipher3; print('SQLCipher', sqlcipher3.connect(':memory:').execute('PRAGMA cipher_version').fetchone()[0])"
+      - run: python -m pytest -v .
   install-smoke:
     # Builds and installs the package the way a newcomer does, then walks the README's MCP-only route against the
     # installed entry points (tests/test_install_smoke.py). The `test` job above only runs unit tests against the

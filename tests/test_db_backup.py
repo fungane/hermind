@@ -169,8 +169,11 @@ def test_old_style_names_are_pruned_in_the_order_made_and_the_new_copy_stays(tmp
     old_db(db)
     for day in range(1, 5):                                           # copies made by earlier versions: no counter
         (tmp_path / f"m.db.bak-v3-2020010{day}-000000").write_bytes(b"x")
+    manual = tmp_path / "m.db.bak-v3-before-move"
+    manual.write_bytes(b"operator copy")
     DecisionStore(str(db)).conn.close()
-    left = sorted(p.name for p in tmp_path.glob("m.db.bak-v*"))
+    assert manual.read_bytes() == b"operator copy"
+    left = sorted(p.name for p in tmp_path.glob("m.db.bak-v*") if p != manual)
     assert len(left) == 3
     assert left[:2] == ["m.db.bak-v3-20200103-000000", "m.db.bak-v3-20200104-000000"]
     assert left[2].startswith("m.db.bak-v4-")

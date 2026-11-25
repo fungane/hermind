@@ -24,7 +24,7 @@ import re
 import sys
 from pathlib import Path
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 SERVER_NAME = "hermind"
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # first = preferred / answered to unknown versions
 DEFAULT_DB = "~/.hermind/memory.db"
@@ -276,7 +276,7 @@ class HermindMCP:
         wanted = [_canon(t) for t in (tools if tools is not None else [])]
         unknown = [t for t in wanted if t not in self._defs]
         if unknown:
-            raise ValueError(f"unknown tool(s): {', '.join(unknown)}; available: "
+            raise ValueError(f"unknown tool; available: "
                              f"{', '.join(n[len('memory_'):] for n in self._defs)}")
         base = wanted or (list(DEFAULT_TOOLS) + (list(DEFAULT_WRITE_TOOLS) if self.write else []))
         self.dropped = [t for t in base if t in WRITE_TOOLS and not self.write]
@@ -292,7 +292,10 @@ class HermindMCP:
 
     def open(self) -> None:
         if self._provider is not None:
-            return
+            snapshot = self._store.snapshot
+            if snapshot is None or snapshot.state() == snapshot.generation:
+                return
+            self.close()
         plugin = _plugin()
         server = self
         write = self.write
@@ -312,9 +315,9 @@ class HermindMCP:
                     weights["openrate"] = 0.0
                 self._store = plugin.DecisionStore(
                     self._db_path(""), synonyms_path=cfg.get("synonyms_path") or None, weights=weights,
-                    boost=plugin._parse_boost(cfg.get("search_boost")), scope=server.scope, track_access=write)
+                    boost=plugin._parse_boost(cfg.get("search_boost")), scope=server.scope, track_access=write, readonly=not write)
                 self._llm = self._make_llm()
-                self._vec = self._make_vec(self._db_path(""))
+                self._vec = self._make_vec(str(self._store.snapshot.path) if self._store.snapshot else self._db_path(""))
 
         cfg = {**self.config, "db_path": self.db}
         prov = _Provider(config=cfg)
@@ -326,6 +329,8 @@ class HermindMCP:
             store.scope = DEFAULT_SCOPE
             scoped = store._scopes
             store._scopes = lambda scope=None: scoped(scope) if scope else None
+            if prov._vec is not None:
+                prov._vec.scopes = None
         self._provider, self._store = prov, store
 
     def close(self) -> None:
@@ -346,7 +351,7 @@ class HermindMCP:
         if sc is None:
             return True
         note = self._store.get(int(nid))
-        return note is None or note.get("scope", DEFAULT_SCOPE) in sc
+        return note is not None and note.get("scope", DEFAULT_SCOPE) in sc
 
     # -- protocol ---------------------------------------------------------------------------------------------
 
@@ -388,11 +393,11 @@ class HermindMCP:
             elif method == "tools/call":
                 result = self._tools_call(params)
             else:
-                return _json_rpc_error(rid, -32601, f"Method not found: {method}")
+                return _json_rpc_error(rid, -32601, "Method not found")
         except _MethodNotFound as exc:
-            return _json_rpc_error(rid, -32601, f"Method not found: {exc}")
+            return _json_rpc_error(rid, -32601, "Method not found")
         except _Unknown as exc:
-            return _json_rpc_error(rid, -32602, f"Unknown tool: {exc}")
+            return _json_rpc_error(rid, -32602, "Unknown tool")
         except ValueError as exc:
             return _json_rpc_error(rid, -32602, str(exc))
         except Exception as exc:                              # never take the server down, never echo note text
@@ -407,7 +412,9 @@ class HermindMCP:
             return _json_rpc_error(rid, -32602, f"missing required _meta field: {PV_KEY} and {CAPS_KEY}")
         if version not in MODERN_PROTOCOLS:
             err = _json_rpc_error(rid, -32022, "Unsupported protocol version")
-            err["error"]["data"] = {"supported": list(MODERN_PROTOCOLS), "requested": version[:40]}
+            err["error"]["data"] = {"supported": list(MODERN_PROTOCOLS)}
+            if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", version):
+                err["error"]["data"]["requested"] = version
             return err
         return None
 
@@ -441,7 +448,7 @@ class HermindMCP:
             self.agent = re.sub(r"[^\w.\-@]+", "-", info["name"]).strip("-")[:40]
             if self._provider is not None:
                 self._provider._session_id = self._session_id()
-        log.info("initialize: client=%s protocol=%s", self.agent or "?", self.protocol)
+        log.info("initialize: protocol=%s", self.protocol)
         return {"protocolVersion": self.protocol, "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": __version__}, "instructions": self._instructions()}
 
@@ -485,7 +492,7 @@ class HermindMCP:
             text, is_error = json.dumps({"error": str(exc)}), True
         except Exception as exc:                              # sqlite errors etc.: type only, no note text
             log.error("tool %s failed: %s", name, type(exc).__name__)
-            text, is_error = json.dumps({"error": f"{name} failed: {type(exc).__name__}: {exc}"}), True
+            text, is_error = json.dumps({"error": f"{name} failed: {type(exc).__name__}; check the database and configuration"}), True
         return {"content": [{"type": "text", "text": _cap_result(text)}], "isError": is_error}
 
     def _run_tool(self, name: str, args: dict) -> str:
@@ -507,25 +514,10 @@ class HermindMCP:
         if name in WRITE_TOOLS and not self._maintained:     # what the plugin does at session start, once, lazily
             self._maintained = True
             try:
-                self._store.maintenance(consolidate=True)
+                self._store.maintenance(consolidate=True, scope=self._store.scope)
             except Exception as exc:
                 log.warning("maintenance skipped: %s", type(exc).__name__)
-        text = self._provider.handle_tool_call(name, args)
-        if name == "memory_related":
-            text = self._only_visible(text)
-        return text
-
-    def _only_visible(self, text: str) -> str:
-        """memory_related is not scoped in the plugin; drop notes from scopes this server does not see."""
-        sc = self._visible_scopes()
-        if sc is None:
-            return text
-        try:
-            data = json.loads(text)
-            data["notes"] = [n for n in data.get("notes", []) if n.get("scope", DEFAULT_SCOPE) in sc]
-            return json.dumps(data, ensure_ascii=False)
-        except (ValueError, AttributeError):
-            return text
+        return self._provider.handle_tool_call(name, args)
 
 
 # -- stdio loop --------------------------------------------------------------------------------------------------
@@ -565,7 +557,7 @@ def serve(server: HermindMCP, instream, outstream) -> None:
             send(_json_rpc_error(None, -32700, "Parse error"))
             continue
         if isinstance(msg, list):                              # JSON-RPC batch (2025-03-26 and earlier)
-            if not msg:
+            if not msg or len(msg) > 64:
                 send(_json_rpc_error(None, -32600, "Invalid Request"))
                 continue
             replies = [r for r in (_handle(server, m) for m in msg) if r is not None]
@@ -648,7 +640,8 @@ def main(argv=None) -> int:
     except SystemExit:
         raise
     except Exception as exc:
-        print(f"hermind-mcp: {exc}", file=sys.stderr)
+        hint = "unknown tool; check --tools" if str(exc).startswith("unknown tool;") else "check server arguments and use a JSON object for --config"
+        print(f"hermind-mcp: invalid configuration ({type(exc).__name__}); {hint}", file=sys.stderr)
         return 2
     if ns.print_tools:
         print(json.dumps({"tools": list(server.active.values())}, separators=(",", ":"), ensure_ascii=False))
@@ -664,10 +657,9 @@ def main(argv=None) -> int:
     try:
         server.open()
     except Exception as exc:
-        print(f"hermind-mcp: cannot open database {server.db}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"hermind-mcp: cannot open database ({type(exc).__name__}); check the path, HERMIND_DB_KEY_FILE and permissions; initialise or upgrade with a writable Hermind instance", file=sys.stderr)
         return 1
-    log.info("serving %s (%s, scope %s, tools: %s)", server.db, "read-write" if server.write else "read-only",
-             server.scope, ", ".join(server.active))
+    log.info("serving %s; tools: %s", "read-write" if server.write else "read-only", ", ".join(server.active))
     try:
         serve(server, proto_in, proto_out)
     except (BrokenPipeError, KeyboardInterrupt):

@@ -26,10 +26,10 @@ def test_extra_body_is_merged_and_optional(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, size=-1):
             return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode()
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda req, timeout=0: (sent.append(json.loads(req.data)), Resp())[1])
+    monkeypatch.setattr("llm._send", lambda req, timeout=0: (sent.append(json.loads(req.data)), Resp())[1])
     base = dict(model="m", base_url="http://127.0.0.1:9/v1", api_key_env="", batch_size=2, timeout=5.0)
     mod.call_llm(argparse.Namespace(**base, extra_body=""), "hi")
     mod.call_llm(argparse.Namespace(**base, extra_body='{"thinking": {"type": "disabled"}}'), "hi")

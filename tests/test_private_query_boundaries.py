@@ -17,8 +17,8 @@ def llm_stub(provider, monkeypatch):
         answer = '{"ids": []}' if 'Candidates:' in prompt else '[]'
         return io.BytesIO(json.dumps({'choices': [{'message': {'content': answer}}]}).encode())
 
-    monkeypatch.setattr(llm.urllib.request, 'urlopen', respond)
-    provider._llm = llm.LLMClient({'base_url': 'http://llm.invalid/v1', 'model': 'stub',
+    monkeypatch.setattr(llm, '_send', respond)
+    provider._llm = llm.LLMClient({'base_url': 'https://llm.invalid/v1', 'model': 'stub',
                                   'rerank': True, 'pii': 'off'})
     return sent
 
@@ -62,4 +62,4 @@ def test_rerank_and_search_log_controls(provider, llm_stub):
     assert len(llm_stub) == 1 and 'glazed ceramics' in llm_stub[0] and 'lavender' not in llm_stub[0]
     rows = store.conn.execute("SELECT kind, query FROM usage_log WHERE kind IN ('search','rerank')").fetchall()
     assert {kind for kind, _ in rows} == {'search', 'rerank'}
-    assert all('glazed ceramics' in q and 'lavender' not in q for _, q in rows)
+    assert all(q == '' for _, q in rows)

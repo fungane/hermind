@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import shutil
+import tempfile
 from pathlib import Path
 
 PLAIN_MAGIC = b"SQLite format 3\x00"
@@ -44,9 +46,9 @@ def key_from_env(env=None) -> str | None:
         try:
             text = Path(path).expanduser().read_text(encoding="utf-8").strip()
         except OSError as exc:
-            raise EncryptionError(f"HERMIND_DB_KEY_FILE={path}: cannot read it ({exc.strerror or exc})") from exc
+            raise EncryptionError("cannot read HERMIND_DB_KEY_FILE; check the path and permissions") from exc
         if not text:
-            raise EncryptionError(f"HERMIND_DB_KEY_FILE={path} is empty")
+            raise EncryptionError("HERMIND_DB_KEY_FILE is empty")
         return text
     return (env.get("HERMIND_DB_KEY") or "").strip() or None
 
@@ -84,10 +86,10 @@ def connect(path: str, key: str | None = None, *, use_env: bool = True, **kwargs
     plain = None if str(path).startswith("file:") or str(path) == ":memory:" else is_plaintext_file(path)
     if key is None:
         if plain is False:
-            raise EncryptionError(f"{path} is encrypted (or is not a SQLite database at all): if it is encrypted, set HERMIND_DB_KEY_FILE (or HERMIND_DB_KEY) to its key")
+            raise EncryptionError("database is encrypted (or is not a SQLite database at all): if it is encrypted, set HERMIND_DB_KEY_FILE (or HERMIND_DB_KEY) to its key")
         return sqlite3.connect(path, **kwargs)
     if plain is True:
-        raise EncryptionError(f"{path} is not encrypted yet but a key is set: encrypt it first with "
+        raise EncryptionError("database is not encrypted yet but a key is set: encrypt it first with "
                               f"tools/encrypt_db.py, or unset HERMIND_DB_KEY / HERMIND_DB_KEY_FILE")
     driver = _driver()
     conn = driver.connect(path, **kwargs)
@@ -96,7 +98,7 @@ def connect(path: str, key: str | None = None, *, use_env: bool = True, **kwargs
         conn.execute("SELECT count(*) FROM sqlite_master").fetchone()        # a wrong key fails here, not later
     except Exception as exc:
         conn.close()
-        raise EncryptionError(f"{path}: wrong key (or not a SQLCipher 4 database): {exc}") from exc
+        raise EncryptionError("wrong key or unsupported SQLCipher database; check the key and format") from exc
     return conn
 
 
@@ -106,3 +108,53 @@ def row_factory(conn):
     if mod == "sqlcipher3":
         return _driver().Row
     return sqlite3.Row
+
+class ReadSnapshot:
+    """Private copy of one stable SQLite file generation, including committed WAL frames.
+
+    SQLite may create or update a shared-memory index even on a mode=ro connection.
+    Give SQLite its own directory. Never use immutable=1 on a live WAL database.
+    """
+
+    def __init__(self, path):
+        self.source = Path(path).expanduser()
+        if not self.source.is_file():
+            raise ValueError("Database missing; initialise it using a writable Hermind installation")
+        self.directory = tempfile.TemporaryDirectory(prefix="hermind-read-")
+        self.path = Path(self.directory.name) / "snapshot.db"
+        try:
+            for _ in range(3):
+                before = self.state()
+                if before[2] and before[2][2]:
+                    continue
+                for suffix, metadata in zip(("", "-wal"), before):
+                    dest = Path(str(self.path) + suffix)
+                    if metadata is None:
+                        dest.unlink(missing_ok=True)
+                        continue
+                    try:
+                        shutil.copyfile(str(self.source) + suffix, dest)
+                    except FileNotFoundError:
+                        break
+                    dest.chmod(0o600)
+                else:
+                    if before == self.state():
+                        self.generation = before
+                        return
+            raise ValueError("Database is changing; retry the read after the writer commits")
+        except BaseException:
+            self.close()
+            raise
+
+    def state(self):
+        result = []
+        for suffix in ("", "-wal", "-journal"):
+            try:
+                st = Path(str(self.source) + suffix).stat()
+                result.append((st.st_dev, st.st_ino, st.st_size, st.st_ctime_ns, st.st_mtime_ns))
+            except FileNotFoundError:
+                result.append(None)
+        return tuple(result)
+
+    def close(self):
+        self.directory.cleanup()

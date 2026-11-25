@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import select
 import subprocess
@@ -68,22 +69,14 @@ class VectorIndex:
         return time.time() >= self._skip_until and os.path.exists(self.python) and os.path.exists(self.model)
 
     def _start(self):
-        # the worker's last error goes to <db>.vec.log (owner-only, overwritten at each start), so a worker that cannot start,
-        # e.g. no sqlcipher3 in its venv for an encrypted database, is not silent
-        try:
-            log = open(self.db_path + ".vec.log", "w", encoding="utf-8")
-            os.chmod(self.db_path + ".vec.log", 0o600)
-        except OSError:
-            log = subprocess.DEVNULL
+        # Native inference libraries can include paths and input values in stderr.
         self._proc = subprocess.Popen(
             [self.python, self.server, "--model", self.model, "--tokenizer", self.tokenizer, "--db", self.db_path,
              "--model-name", self.model_name, "--idle", str(self.idle), "--pooling", self.pooling],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
             # onnxruntime sends telemetry to Microsoft by default: off (embed_server.py sets it too). It also keeps files
             # under the user's cache folder; any it still writes go to this worker's own folder instead
             env={**os.environ, "ORT_DISABLE_TELEMETRY": "1", "XDG_CACHE_HOME": str(self.home / ".cache")})
-        if log is not subprocess.DEVNULL:
-            log.close()
 
     def _call(self, req: dict, timeout: float | None = None) -> dict | None:
         if not self.available():
@@ -105,7 +98,9 @@ class VectorIndex:
                 self._fails = 0
                 self._arm_idle_reap()
                 return resp
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).warning("embedding worker unavailable (%s); check its model, runtime and database driver",
+                                                    type(exc).__name__)
                 self._fails += 1
                 self.close()
                 if self._fails >= 3:
@@ -166,9 +161,12 @@ class VectorIndex:
         dim = int(resp["dim"])
         raw = base64.b64decode(resp["vecs"])
         step = dim * 4
-        store.put_vectors(self.model_name, [(nid, raw[i * step:(i + 1) * step]) for i, (nid, _) in enumerate(todo)])
-        return len(todo)
+        if dim <= 0 or len(raw) != step * len(todo):
+            return 0
+        return store.put_vectors(self.model_name, [(nid, text, raw[i * step:(i + 1) * step])
+                                                   for i, (nid, text) in enumerate(todo)])
 
     def search(self, query: str, timeout: float | None = None) -> list[tuple[int, float]] | None:
-        resp = self._call({"op": "search", "query": query, "k": self.k, "prefix": self.query_prefix}, timeout=timeout)
+        resp = self._call({"op": "search", "query": query, "k": self.k, "prefix": self.query_prefix,
+                           "scopes": getattr(self, "scopes", None)}, timeout=timeout)
         return [(int(i), float(s)) for i, s in resp["hits"]] if resp else None

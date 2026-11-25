@@ -81,29 +81,24 @@ USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "calls"
 
 def call_usage(cfg, prompt: str) -> str:
     """Same request as bf.call_llm, but also accumulates token usage into USAGE."""
-    import urllib.request
-    # thinking mode is on by default on DeepSeek and would spend the whole max_tokens on reasoning (empty content),
-    # so disable it; response_format=json_object keeps the answer parseable.
-    body = json.dumps({"model": cfg.model, "temperature": 0.3, "max_tokens": 300 * cfg.batch_size,
-                       "thinking": {"type": "disabled"}, "response_format": {"type": "json_object"},
-                       "messages": [{"role": "user", "content": prompt}]}).encode()
-    headers = {"Content-Type": "application/json"}
-    key = os.environ.get(cfg.api_key_env, "") if cfg.api_key_env else ""
-    req = urllib.request.Request(cfg.base_url.rstrip("/") + "/chat/completions", data=body, headers=headers)
-    if key:
-        req.add_unredirected_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8", "replace"))
-    u = data.get("usage") or {}
+    client = bf.model_client(cfg, thinking={"type": "disabled"})
+    answer = client.chat(prompt, max_tokens=300 * cfg.batch_size, json_mode=True)
+    if not answer:
+        return ""
+    u = client.last_usage
     USAGE["calls"] += 1
     USAGE["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
     USAGE["completion_tokens"] += int(u.get("completion_tokens") or 0)
     USAGE["cached_tokens"] += int(u.get("prompt_cache_hit_tokens") or (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
-    return str(data["choices"][0]["message"]["content"] or "")
+    return answer
 
 
 def work(cfg, entity: str, notes: list[dict]):
-    prompt = make_prompt(entity, notes)
+    client = bf.model_client(cfg)
+    if any(client.public_text(n["content"]) is None for n in notes) or client.public_text(entity) is None:
+        return entity, notes, None, None, "blocked by privacy policy"
+    notes = [{**n, "content": client.public_text(n["content"])} for n in notes]
+    prompt = make_prompt(client.public_text(entity), notes)
     err = None
     for mi, model in enumerate(bf._models(cfg)):
         c = argparse.Namespace(**{**vars(cfg), "model": model})
@@ -112,9 +107,9 @@ def work(cfg, entity: str, notes: list[dict]):
                 items = _parse(call_usage(c, prompt))
                 if items is not None:
                     return entity, notes, validate(items, notes), model, None
-                err = f"{model}: malformed output"
+                err = "malformed model response"
             except Exception as exc:
-                err = redact_pii(f"{model}: {type(exc).__name__}: {exc}")[0][:200]
+                err = type(exc).__name__
             time.sleep(min(8.0, cfg.retry_wait * (2 ** attempt)))
     return entity, notes, None, None, err
 
@@ -134,7 +129,7 @@ def run(cfg, out=None) -> dict:
 
         def done(res):
             entity, notes, items, model, err = res
-            label = redact_pii(entity)[0]  # display only; keep the original store key
+            label = "summary group"
             stats["entities"] += 1
             if items is None:
                 stats["failed"] += 1
@@ -148,13 +143,12 @@ def run(cfg, out=None) -> dict:
                         store.replace_summaries(entity, items)
                     except RefusedWrite as exc:          # the whole replace rolled back: the entity keeps its old summaries
                         stats["refused"] += 1
-                        reason = redact_pii(str(exc))[0]
+                        reason = "storage privacy check refused the summary"
                         bf.log_event(out, event="refused", entity=label, error=reason[:200])
                         print(f"skipped entity {label!r}: {reason[:120]}", file=sys.stderr)
                         return
                     stats["written"] += len(items)
-                bf.log_event(out, event="done" if not cfg.dry_run else "preview", entity=label, model=model,
-                             summaries=[t for t, _ in items])
+                bf.log_event(out, event="done" if not cfg.dry_run else "preview", count=len(items))
 
         with ThreadPoolExecutor(max_workers=cfg.concurrency) as pool:
             pending = []
